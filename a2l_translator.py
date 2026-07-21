@@ -1,0 +1,972 @@
+#!/usr/bin/env python3
+"""
+A2L 文件翻译工具 (CLI)
+========================
+解析 ASAM MCD-2 MC (ASAP2) 文件，提取可翻译文本，
+支持自动翻译、术语词典、进度管理。
+
+用法:
+    python a2l_translator.py input.a2l                          # 仅提取可翻译字符串
+    python a2l_translator.py input.a2l --auto-translate         # 自动翻译全部
+    python a2l_translator.py input.a2l -o output.a2l --auto     # 翻译并输出
+    python a2l_translator.py input.a2l --dict glossary.csv      # 使用自定义词典
+    python a2l_translator.py input.a2l --save progress.json     # 保存进度
+    python a2l_translator.py input.a2l --load progress.json     # 恢复进度
+    python a2l_translator.py input.a2l --extract strings.csv    # 导出到 CSV
+    python a2l_translator.py input.a2l --apply translated.csv   # 从 CSV 导入译文
+    python a2l_translator.py *.a2l --auto-translate             # 批量处理
+"""
+
+import sys
+import os
+import re
+import json
+import csv
+import time
+import ssl
+import argparse
+import urllib.request
+import urllib.parse
+import urllib.error
+from pathlib import Path
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# ── 百度翻译 API ──
+try:
+    from baidu_api import baidu_translate_batch, baidu_translate_one
+    _HAS_BAIDU = True
+except ImportError:
+    _HAS_BAIDU = False
+
+# 全局 SSL 上下文（可通过 --no-ssl-verify 控制）
+_ssl_context = None
+
+# ── 导入共享词典 (1600+ 英文 + 300+ 德文) ──
+from glossary_data import BUILTIN_GLOSSARY, GERMAN_GLOSSARY
+
+# ── 导入多源词典验证 (8大权威词典) ──
+try:
+    from dictionary_resources import MultiSourceDictionary, get_dictionary
+    _HAS_MULTI_DICT = True
+except ImportError:
+    _HAS_MULTI_DICT = False
+
+
+# ══════════════════════════════════════════════════════════
+#  词典预索引 — O(n*m) → O(1) + O(candidates)
+# ══════════════════════════════════════════════════════════
+
+def build_glossary_index(glossary):
+    """预建词典索引，大幅加速匹配。同时添加德语 Umlaut ASCII 变体。"""
+    exact = {}
+    by_first_word = {}
+    by_length = {}
+
+    _umlaut_simple = str.maketrans("äöüÄÖÜ", "aouAOU")
+
+    def _de_variants(text):
+        simple = text.translate(_umlaut_simple).replace("ß", "ss")
+        expanded = text.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue")
+        expanded = expanded.replace("Ä", "Ae").replace("Ö", "Oe").replace("Ü", "Ue")
+        expanded = expanded.replace("ß", "ss")
+        variants = {simple}
+        if expanded != simple:
+            variants.add(expanded)
+        return variants
+
+    def add_entry(key, value):
+        kl = key.lower()
+        exact[kl] = value
+        words = kl.split()
+        if words:
+            fw = words[0]
+            by_first_word.setdefault(fw, []).append((key, value, kl))
+        wc = len(words)
+        by_length.setdefault(wc, []).append((key, value, kl))
+
+    for key, value in glossary.items():
+        add_entry(key, value)
+        if any(c in key for c in "äöüÄÖÜß"):
+            for variant in _de_variants(key):
+                if variant != key:
+                    add_entry(variant, value)
+
+    return exact, by_first_word, by_length
+
+
+def translate_with_glossary_fast(text, glossary, index):
+    """快速翻译 — 利用索引将 4000+ 次比较降为 ~20 次"""
+    if not text or len(text.strip()) < 2:
+        return None
+
+    original = text
+    text_lower = text.lower().strip()
+    exact_dict, by_first_word, by_length = index
+
+    # O(1) 精确匹配
+    if text_lower in exact_dict:
+        return exact_dict[text_lower]
+
+    # 收集候选（按首词 + 按词数匹配）
+    words = text_lower.split()
+    candidates = {}
+    for w in words:
+        for key, value, kl in by_first_word.get(w, []):
+            candidates.setdefault(kl, (key, value))
+
+    wc = len(words)
+    for delta in [0, -1, 1, -2, 2]:
+        for key, value, kl in by_length.get(wc + delta, []):
+            candidates.setdefault(kl, (key, value))
+
+    # 子串匹配（仅对 10-50 个候选）
+    matches = []
+    for kl, (key, value) in candidates.items():
+        if len(kl) < 3:
+            continue
+        idx = text_lower.find(kl)
+        if idx >= 0:
+            before_ok = idx == 0 or not text_lower[idx - 1].isalpha()
+            after_ok = (idx + len(kl) == len(text_lower)
+                        or not text_lower[idx + len(kl)].isalpha())
+            if before_ok and after_ok:
+                matches.append((kl, value, idx, len(kl)))
+
+    if not matches:
+        return None
+
+    # 去重去重叠，最长优先，拼接
+    matches.sort(key=lambda x: -x[3])
+    used_ranges = []
+    selected = []
+    for m in matches:
+        m_start, m_end = m[2], m[2] + m[3]
+        if not any(not (m_end <= u[0] or m_start >= u[1]) for u in used_ranges):
+            used_ranges.append((m_start, m_end))
+            selected.append(m)
+
+    selected.sort(key=lambda x: x[2])
+    result_parts = []
+    last_end = 0
+    for _, zh, start, length in selected:
+        gap = original[last_end:start]
+        if gap.strip():
+            result_parts.append(gap)
+        result_parts.append(zh)
+        last_end = start + length
+    if last_end < len(original):
+        tail = original[last_end:]
+        if tail.strip():
+            result_parts.append(tail)
+
+    return "".join(result_parts) if result_parts else None
+
+
+PATTERNS = [
+    # (类型, 正则, 描述在第几个捕获组, 名称在第几个组, 是 header 类型)
+    ("MEASUREMENT",      re.compile(r'/begin\s+MEASUREMENT\s+(\w+)\s+"([^"]*)"', re.I),               2, 1, False),
+    ("CHARACTERISTIC",   re.compile(r'/begin\s+CHARACTERISTIC\s+(\w+)\s+"([^"]*)"', re.I),            2, 1, False),
+    ("FUNCTION",         re.compile(r'/begin\s+FUNCTION\s+(\w+)\s+"([^"]*)"', re.I),                 2, 1, False),
+    ("GROUP",            re.compile(r'/begin\s+GROUP\s+(\w+)\s+"([^"]*)"', re.I),                    2, 1, False),
+    ("AXIS_PTS",         re.compile(r'/begin\s+AXIS_PTS\s+(\w+)\s+"([^"]*)"', re.I),                 2, 1, False),
+    ("COMPU_METHOD",     re.compile(r'/begin\s+COMPU_METHOD\s+(\w+)\s+"([^"]*)"', re.I),             2, 1, False),
+    ("COMPU_VTAB",       re.compile(r'/begin\s+COMPU_VTAB\s+(\w+)\s+"([^"]*)"', re.I),               2, 1, False),
+    ("COMPU_VTAB_RANGE", re.compile(r'/begin\s+COMPU_VTAB_RANGE\s+(\w+)\s+"([^"]*)"', re.I),         2, 1, False),
+    ("PROJECT",          re.compile(r'/begin\s+PROJECT\s+(\w+)\s+"([^"]*)"', re.I),                  2, 1, False),
+    ("MODULE",           re.compile(r'/begin\s+MODULE\s+(\w+)\s+"([^"]*)"', re.I),                   2, 1, False),
+    ("HEADER",           re.compile(r'/begin\s+HEADER\s+"([^"]*)"', re.I),                           1, 0, True),
+    ("MOD_COMMON",       re.compile(r'/begin\s+MOD_COMMON\s+"([^"]*)"', re.I),                       1, 0, True),
+    ("MOD_PAR",          re.compile(r'/begin\s+MOD_PAR\s+"([^"]*)"', re.I),                          1, 0, True),
+]
+
+COMMENT_BLOCK_RE = re.compile(r'/\*([\s\S]*?)\*/')
+COMMENT_LINE_RE  = re.compile(r'//([^\r\n]*)')
+
+# 不可翻译的模式（纯数字、格式串、十六进制）
+SKIP_PATTERNS = [
+    re.compile(r'^[0-9+\-*/\s().,eE]+$'),
+    re.compile(r'^%[0-9.]*[dfexs]$', re.I),
+    re.compile(r'^0x[0-9a-fA-F]+$'),
+    re.compile(r'^[A-Z_]{2,20}$'),  # 纯大写标识符
+]
+
+
+def is_skippable(text):
+    """检查文本是否无需翻译"""
+    t = text.strip()
+    if len(t) < 2:
+        return True
+    for pat in SKIP_PATTERNS:
+        if pat.match(t):
+            return True
+    return False
+
+
+def parse_a2l(content):
+    """
+    解析 A2L 内容，提取所有可翻译条目。
+    返回: list[dict]
+    """
+    items = []
+    seen_positions = set()
+    counter = [0]
+
+    # 匹配各 A2L 关键字描述
+    for (typ, regex, desc_group, name_group, is_header) in PATTERNS:
+        for m in regex.finditer(content):
+            desc = m.group(desc_group)
+            name = m.group(name_group) if not is_header else ""
+            full = m.group(0)
+            desc_start_in_match = full.rfind(desc)
+            start_pos = m.start() + desc_start_in_match
+            end_pos = start_pos + len(desc)
+
+            if is_skippable(desc):
+                continue
+
+            key = (start_pos, end_pos)
+            if key in seen_positions:
+                continue
+            seen_positions.add(key)
+
+            counter[0] += 1
+            items.append({
+                "id": counter[0],
+                "type": typ,
+                "name": name,
+                "original": desc,
+                "translated": "",
+                "status": "untranslated",
+                "start": start_pos,
+                "end": end_pos,
+            })
+
+    # 块注释
+    for m in COMMENT_BLOCK_RE.finditer(content):
+        body = m.group(1).strip()
+        if len(body) < 3 or is_skippable(body):
+            continue
+        start_pos = m.start() + 2  # 跳过 /*
+        end_pos = m.end() - 2      # 跳过 */
+        key = (start_pos, end_pos)
+        if key in seen_positions:
+            continue
+        seen_positions.add(key)
+        counter[0] += 1
+        items.append({
+            "id": counter[0],
+            "type": "COMMENT",
+            "name": "",
+            "original": m.group(1),
+            "translated": "",
+            "status": "untranslated",
+            "start": start_pos,
+            "end": end_pos,
+        })
+
+    # 行注释
+    for m in COMMENT_LINE_RE.finditer(content):
+        body = m.group(1).strip()
+        if len(body) < 3 or is_skippable(body):
+            continue
+        start_pos = m.start() + 2  # 跳过 //
+        end_pos = m.start() + len(m.group(0))
+        key = (start_pos, end_pos)
+        if key in seen_positions:
+            continue
+        seen_positions.add(key)
+        counter[0] += 1
+        items.append({
+            "id": counter[0],
+            "type": "COMMENT",
+            "name": "",
+            "original": m.group(1),
+            "translated": "",
+            "status": "untranslated",
+            "start": start_pos,
+            "end": end_pos,
+        })
+
+    # 按位置排序
+    items.sort(key=lambda x: x["start"])
+    return items
+
+
+# ── 重建 A2L ──────────────────────────────────────
+
+def rebuild_a2l(content, items):
+    """将翻译替换回 A2L 内容（分段拼接，避免大文件重复拷贝内存爆炸）"""
+    translated = [i for i in items if i["translated"] and i["translated"] != i["original"]]
+    if not translated:
+        return content
+
+    # 按位置排序，从前往后分段拼接
+    translated.sort(key=lambda x: x["start"])
+    parts = []
+    last_end = 0
+    for item in translated:
+        parts.append(content[last_end:item["start"]])
+        parts.append(item["translated"])
+        last_end = item["end"]
+    parts.append(content[last_end:])
+    return "".join(parts)
+
+
+# ── 词典翻译 ──────────────────────────────────────
+
+def load_glossary(filepath):
+    """加载自定义术语词典 (CSV 或 JSON)"""
+    glossary = {}
+    path = Path(filepath)
+    if not path.exists():
+        print(f"[警告] 词典文件不存在: {filepath}")
+        return glossary
+
+    if path.suffix.lower() == '.json':
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                glossary = data
+            elif isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict) and 'source' in item and 'target' in item:
+                        glossary[item['source']] = item['target']
+    elif path.suffix.lower() == '.csv':
+        with open(filepath, 'r', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            if header and len(header) >= 2:
+                for row in reader:
+                    if len(row) >= 2 and row[0].strip() and row[1].strip():
+                        glossary[row[0].strip()] = row[1].strip()
+    else:
+        # 纯文本: 每行 source=TARGET
+        with open(filepath, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if '=' in line:
+                    key, val = line.split('=', 1)
+                    glossary[key.strip()] = val.strip()
+
+    return glossary
+
+
+def apply_glossary(items, glossary, show_progress=True):
+    """应用术语词典翻译（精确匹配 + 模糊匹配 + 智能子串匹配）"""
+    count = 0
+    total = len(items)
+    dot_width = 20
+    last_dots = 0
+    batch_interval = max(1, total // 20)  # 每 5% 更新一次进度
+
+    # 预建索引
+    index = build_glossary_index(glossary)
+
+    for idx, item in enumerate(items):
+        if item["status"] != "untranslated":
+            continue
+
+        result = translate_with_glossary_fast(item["original"], glossary, index)
+        if result:
+            item["translated"] = result
+            item["status"] = "auto"
+            count += 1
+
+        # 批量更新进度（不是每条都打印）
+        if show_progress and ((idx + 1) % batch_interval == 0 or idx == total - 1):
+            done_pct = (idx + 1) / total
+            filled = int(done_pct * dot_width)
+            if filled != last_dots:
+                bar = "●" * filled + "○" * (dot_width - filled)
+                print(f"  词典匹配 [{bar}] {idx+1}/{total}  命中{count}", end="\r")
+                last_dots = filled
+
+    if show_progress:
+        print(f"  词典匹配 [{'●' * dot_width}] {total}/{total}  命中{count}")
+    return count
+
+
+# ── 逐词智能翻译 ──────────────────────────────────
+
+# 跳过翻译的类型（公式、版本号、代码等）
+_SMART_SKIP_TYPES = {
+    "COMPU_METHOD",  # Q = V 等数学公式
+    "FUNCTION",       # 版本号 10.0.1_P602_MD1CE100
+    "RECORD_LAYOUT",  # 内存布局描述
+    "MODULE",         # 模块名
+}
+
+def build_smart_translator(glossary, extra_keywords=None):
+    """构建智能翻译器 — 返回 (exact_match_dict, compiled_regex, term_to_zh)
+    使用单次正则扫描替代逐词遍历，性能提升 100-1000 倍。"""
+    exact_dict = {}
+    merge = {}
+    for en, zh in glossary.items():
+        en_lower = en.lower().strip()
+        exact_dict[en_lower] = zh
+        for word in re.findall(r'[A-Za-z]{2,}', en):
+            wl = word.lower()
+            if wl not in merge:
+                merge[wl] = zh[:8]
+    if extra_keywords:
+        for k, v in extra_keywords.items():
+            kl = k.lower().strip()
+            exact_dict[kl] = v
+            merge[kl] = v
+
+    terms = sorted(set(t for t in merge if len(t) >= 2), key=len, reverse=True)
+    if not terms:
+        return exact_dict, None, {}
+
+    combined_pattern = re.compile(
+        '|'.join(re.escape(t) for t in terms),
+        re.IGNORECASE
+    )
+    term_map = {t: merge[t] for t in terms}
+    return exact_dict, combined_pattern, term_map
+
+
+def smart_translate_text_fast(text, exact_dict, combined_pattern, term_map):
+    """单次正则扫描翻译 — O(n) 复杂度"""
+    if not combined_pattern:
+        return None
+
+    tl = text.lower().strip()
+    if tl in exact_dict:
+        return exact_dict[tl]
+
+    matches = []
+    for m in combined_pattern.finditer(text):
+        matched_term = m.group().lower()
+        if matched_term in term_map:
+            matches.append((m.start(), m.end(), term_map[matched_term]))
+
+    if not matches:
+        return None
+
+    matches.sort(key=lambda x: -(x[1] - x[0]))
+    used = []
+    selected = []
+    for start, end, zh in matches:
+        if not any(max(start, u[0]) < min(end, u[1]) for u in used):
+            used.append((start, end))
+            selected.append((start, end, zh))
+
+    selected.sort(key=lambda x: x[0])
+    parts = []
+    last = 0
+    for start, end, zh in selected:
+        parts.append(text[last:start])
+        parts.append(zh)
+        last = end
+    parts.append(text[last:])
+
+    result = "".join(parts)
+    return result if result != text else None
+
+
+def apply_smart_translate(items, glossary, extra_keywords=None, show_progress=True):
+    """对未匹配条目执行逐词智能翻译（第二遍）"""
+    exact_dict, combined_pattern, term_map = build_smart_translator(glossary, extra_keywords)
+
+    total = len(items)
+    count = 0
+    dot_width = 20
+    last_dots = 0
+    batch_interval = max(1, total // 20)
+
+    for idx, item in enumerate(items):
+        if item.get("translated"):
+            continue
+        if item["type"] in _SMART_SKIP_TYPES:
+            continue
+
+        result = smart_translate_text_fast(item["original"], exact_dict, combined_pattern, term_map)
+        if result:
+            item["translated"] = result
+            item["status"] = "auto"
+            count += 1
+
+        if show_progress and ((idx + 1) % batch_interval == 0 or idx == total - 1):
+            done_pct = (idx + 1) / total
+            filled = int(done_pct * dot_width)
+            if filled != last_dots:
+                bar = "●" * filled + "○" * (dot_width - filled)
+                print(f"  逐词翻译 [{bar}] {idx+1}/{total}  新增{count}", end="\r")
+                last_dots = filled
+
+    if show_progress:
+        print(f"  逐词翻译 [{'●' * dot_width}] {total}/{total}  新增{count}")
+    return count
+
+
+# ── API 翻译 ──────────────────────────────────────
+
+def api_translate_batch(texts, src_lang, tgt_lang, timeout=15):
+    """
+    使用 MyMemory API 批量翻译。
+    返回: list[str] 或 None（失败时）
+    """
+    separator = " ||| "
+    combined = separator.join(texts)
+
+    if src_lang == "auto":
+        langpair = f"Autodetect|{tgt_lang}"
+    else:
+        langpair = f"{src_lang}|{tgt_lang}"
+
+    params = {
+        "q": combined,
+        "langpair": langpair,
+    }
+
+    url = "https://api.mymemory.translated.net/get?" + urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
+
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; A2L-Translator/1.0)"})
+        ctx = _ssl_context  # None = 默认验证，自定义 = 跳过或指定证书
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")[:200]
+        except Exception:
+            pass
+        print(f"  [API HTTP {e.code}] {e.reason}" + (f" — {body}" if body else ""))
+        return None
+    except (urllib.error.URLError, json.JSONDecodeError, OSError) as e:
+        err_msg = str(e)
+        if "CERTIFICATE_VERIFY_FAILED" in err_msg or "certificate" in err_msg.lower():
+            print(f"  [API SSL 错误] 证书验证失败，可用 --no-ssl-verify 跳过（仅限内网环境）")
+        else:
+            print(f"  [API 错误] {e}")
+        return None
+
+    if data.get("responseStatus") != 200:
+        print(f"  [API 响应异常] status={data.get('responseStatus')}")
+        return None
+
+    translated = data["responseData"]["translatedText"]
+    # MyMemory 会压缩分隔符周围的空格，所以用不带空格的 ||| 拆分
+    parts = translated.split("|||")
+    return [p.strip() for p in parts]
+
+
+def auto_translate(items, glossary, src_lang, tgt_lang, batch_size=8, delay=0.6,
+                   baidu_appid=None, baidu_secret=None, ssl_ctx=None):
+    """
+    自动翻译所有未翻译条目。
+    先词典匹配，再并行 API 翻译（百度翻译优先，回退 MyMemory）。
+    返回翻译成功的条目数。
+    """
+    # 先应用词典
+    dict_count = apply_glossary(items, glossary)
+
+    # 找出仍需 API 翻译的
+    untranslated = [i for i in items if i["status"] == "untranslated"]
+    if not untranslated:
+        return dict_count
+
+    total = len(untranslated)
+    api_count_box = [0]
+    dot_width = 20
+    use_baidu = _HAS_BAIDU and baidu_appid and baidu_secret
+
+    engine = "百度翻译" if use_baidu else "MyMemory"
+    print(f"\n  正在调用翻译 API ({total} 条待翻译) [{engine}]...")
+    print(f"  语言: {src_lang} → {tgt_lang}  |  并行批次: {min(4, max(1, (total + batch_size - 1) // batch_size))}")
+
+    def update_bar(done, success_count):
+        filled = int(done / total * dot_width) if total > 0 else 0
+        bar = "●" * filled + "○" * (dot_width - filled)
+        print(f"  [{bar}] {done}/{total}  ✓{success_count}", end="\r")
+
+    update_bar(0, 0)
+
+    max_workers = min(4, max(1, (total + batch_size - 1) // batch_size))
+    batches = []
+    for bs in range(0, total, batch_size):
+        batch = untranslated[bs:bs + batch_size]
+        texts = [b["original"].strip() for b in batch]
+        batches.append((batch, texts))
+
+    def translate_batch(batch_data):
+        batch, texts = batch_data
+        if use_baidu:
+            result = baidu_translate_batch(texts, src_lang, tgt_lang, baidu_appid, baidu_secret, ssl_ctx)
+            if result:
+                local_success = 0
+                for j, b in enumerate(batch):
+                    if j < len(result) and result[j] and result[j] != b["original"]:
+                        b["translated"] = result[j]
+                        b["status"] = "auto"
+                        local_success += 1
+                    else:
+                        b["status"] = "error"
+                return len(batch), local_success
+            else:
+                for b in batch:
+                    b["status"] = "error"
+                return len(batch), 0
+        else:
+            result = api_translate_batch(texts, src_lang, tgt_lang)
+            if result:
+                local_success = 0
+                for j, b in enumerate(batch):
+                    if j < len(result) and result[j] and result[j] != b["original"]:
+                        b["translated"] = result[j]
+                        b["status"] = "auto"
+                        local_success += 1
+                    else:
+                        b["status"] = "error"
+                return len(batch), local_success
+            else:
+                for b in batch:
+                    b["status"] = "error"
+                return len(batch), 0
+
+    done_count = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(translate_batch, b): b for b in batches}
+        for future in as_completed(futures):
+            try:
+                batch_done, batch_success = future.result()
+                api_count_box[0] += batch_success
+                done_count += batch_done
+                update_bar(done_count, api_count_box[0])
+            except Exception:
+                pass
+
+    api_count = api_count_box[0]
+    update_bar(total, api_count)
+    print()
+    print(f"  完成: 词典 {dict_count} 条 + API {api_count} 条 [{engine}]")
+    return dict_count + api_count
+
+
+# ── 导出 / 导入 ────────────────────────────────────
+
+def export_csv(items, filepath):
+    """导出所有条目为 CSV"""
+    with open(filepath, 'w', newline='', encoding='utf-8-sig') as f:
+        writer = csv.writer(f)
+        writer.writerow(["id", "type", "name", "original", "translated", "status"])
+        for item in items:
+            writer.writerow([
+                item["id"], item["type"], item["name"],
+                item["original"], item["translated"] or "", item["status"]
+            ])
+    print(f"已导出 {len(items)} 条到: {filepath}")
+
+
+def export_json(items, filepath):
+    """导出所有条目为 JSON（包含完整位置信息，可用于恢复）"""
+    with open(filepath, 'w', encoding='utf-8') as f:
+        json.dump(items, f, ensure_ascii=False, indent=2)
+    print(f"已导出 {len(items)} 条到: {filepath}")
+
+
+def save_progress(items, original_content, filepath):
+    """保存翻译进度（含原始文件内容）"""
+    data = {
+        "items": items,
+        "original_content": original_content,
+        "count": len(items),
+    }
+    with open(filepath, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    print(f"翻译进度已保存: {filepath}")
+
+
+def load_progress(filepath):
+    """加载翻译进度"""
+    with open(filepath, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    items = data.get("items", [])
+    content = data.get("original_content", "")
+    print(f"已加载进度: {len(items)} 条")
+    return items, content
+
+
+def apply_csv(items, filepath):
+    """从 CSV 导入译文"""
+    imported = {}
+    with open(filepath, 'r', encoding='utf-8-sig') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rid = int(row.get("id", 0))
+            translated = row.get("translated", "").strip()
+            if rid and translated:
+                imported[rid] = translated
+
+    count = 0
+    for item in items:
+        if item["id"] in imported and imported[item["id"]]:
+            item["translated"] = imported[item["id"]]
+            item["status"] = "manual"
+            count += 1
+
+    print(f"已从 CSV 导入 {count} 条译文")
+    return count
+
+
+def print_summary(items):
+    """打印翻译摘要"""
+    total = len(items)
+    by_type = {}
+    by_status = {"untranslated": 0, "auto": 0, "manual": 0, "error": 0}
+
+    for item in items:
+        by_type[item["type"]] = by_type.get(item["type"], 0) + 1
+        by_status[item["status"]] = by_status.get(item["status"], 0) + 1
+
+    print("\n" + "=" * 60)
+    print("  翻译摘要")
+    print("=" * 60)
+    print(f"  总条目: {total}")
+    print(f"  已翻译: {by_status['auto'] + by_status['manual']}  (自动: {by_status['auto']}, 手动: {by_status['manual']})")
+    print(f"  未翻译: {by_status['untranslated']}")
+    if by_status['error']:
+        print(f"  失败:   {by_status['error']}")
+    print(f"\n  按类型分布:")
+    for typ, cnt in sorted(by_type.items(), key=lambda x: -x[1]):
+        print(f"    {typ:<22s} {cnt:>4d}")
+    print("=" * 60 + "\n")
+
+
+def list_strings(items, limit=50):
+    """列出可翻译字符串"""
+    print("\n" + "=" * 80)
+    print(f"{'ID':<6s} {'类型':<22s} {'名称':<25s} {'原文'}")
+    print("=" * 80)
+
+    shown = 0
+    for item in items:
+        if shown >= limit:
+            remaining = len(items) - shown
+            if remaining > 0:
+                print(f"... 还有 {remaining} 条 (用 --extract 导出完整列表)")
+            break
+        name = item["name"][:24] if item["name"] else "-"
+        status_mark = "✓" if item["status"] != "untranslated" else " "
+        print(f"{item['id']:<6d} {item['type']:<22s} {name:<25s} [{status_mark}] {item['original'][:60]}")
+        shown += 1
+    print("=" * 80 + "\n")
+
+
+# ── 主函数 ────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="A2L 文件翻译工具 — 解析 ASAP2 文件并翻译描述/注释",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  python a2l_translator.py ecu.a2l --auto-translate
+  python a2l_translator.py ecu.a2l -o ecu_cn.a2l --auto -s en -t zh-CN
+  python a2l_translator.py ecu.a2l --dict my_terms.csv --auto
+  python a2l_translator.py ecu.a2l --save progress.json
+  python a2l_translator.py ecu.a2l --load progress.json --auto
+  python a2l_translator.py ecu.a2l --extract strings.csv
+  python a2l_translator.py ecu.a2l --apply translated.csv -o ecu_cn.a2l
+  python a2l_translator.py *.a2l --auto-translate           # 批量处理
+        """,
+    )
+
+    parser.add_argument("files", nargs="+", help="A2L 文件路径，支持通配符")
+    parser.add_argument("-o", "--output", help="输出文件路径（单文件时有效）")
+    parser.add_argument("-s", "--source", default="auto", help="源语言 (默认: auto, 可选: en, de)")
+    parser.add_argument("-t", "--target", default="zh-CN", help="目标语言 (默认: zh-CN)")
+    parser.add_argument("--auto-translate", "--auto", action="store_true", help="自动翻译全部未翻译条目")
+    parser.add_argument("--dict", help="自定义术语词典文件 (CSV/JSON/TXT)")
+    parser.add_argument("--no-builtin", action="store_true", help="不使用内置汽车术语词典")
+    parser.add_argument("--no-ssl-verify", action="store_true", help="跳过 SSL 证书验证（仅限内网/代理环境）")
+    parser.add_argument("--baidu-appid", metavar="APPID", help="百度翻译 APP ID")
+    parser.add_argument("--baidu-secret", metavar="SECRET", help="百度翻译密钥（配置后优先使用百度翻译）")
+    parser.add_argument("--extract", metavar="FILE", help="导出可翻译字符串到 CSV 文件")
+    parser.add_argument("--extract-json", metavar="FILE", help="导出完整翻译数据到 JSON 文件")
+    parser.add_argument("--apply", metavar="FILE", help="从 CSV 文件导入译文")
+    parser.add_argument("--save", metavar="FILE", help="保存翻译进度 (JSON，含原始文件)")
+    parser.add_argument("--load", metavar="FILE", help="加载翻译进度继续工作")
+    parser.add_argument("--list", type=int, nargs="?", const=50, metavar="N", help="列出可翻译字符串 (默认 50 条)")
+    parser.add_argument("--batch", type=int, default=8, help="API 批量大小 (默认: 8)")
+    parser.add_argument("--delay", type=float, default=0.6, help="API 请求间隔秒数 (默认: 0.6)")
+    parser.add_argument("--quiet", "-q", action="store_true", help="安静模式，减少输出")
+    parser.add_argument("--verify", action="store_true",
+                       help="翻译完成后用8大权威词典验证准确率")
+
+    args = parser.parse_args()
+
+    # ── 准备词典 ──
+    glossary = {}
+    if not args.no_builtin:
+        glossary.update(BUILTIN_GLOSSARY)
+        glossary.update(GERMAN_GLOSSARY)  # 合并德语词典
+    if args.dict:
+        custom = load_glossary(args.dict)
+        glossary.update(custom)
+        if not args.quiet:
+            print(f"已加载自定义词典: {len(custom)} 条 (总计 {len(glossary)} 条)")
+
+    # ── SSL 配置 ──
+    if args.no_ssl_verify:
+        global _ssl_context
+        _ssl_context = ssl.create_default_context()
+        _ssl_context.check_hostname = False
+        _ssl_context.verify_mode = ssl.CERT_NONE
+        if not args.quiet:
+            print("[警告] SSL 证书验证已禁用")
+
+    # ── 处理每个文件 ──
+    exit_code = 0
+
+    for filepath in args.files:
+        path = Path(filepath)
+        if not path.exists():
+            print(f"[错误] 文件不存在: {filepath}")
+            exit_code = 1
+            continue
+        if path.suffix.lower() != '.a2l':
+            print(f"[警告] 非 A2L 文件，跳过: {filepath}")
+            continue
+
+        if not args.quiet:
+            size_mb = path.stat().st_size / (1024 * 1024)
+            print(f"\n{'─' * 60}")
+            print(f"  文件: {path.name}  ({size_mb:.1f} MB)")
+            print(f"{'─' * 60}")
+
+        # 读取文件
+        try:
+            # 尝试 UTF-8，失败则用 latin-1
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    content = f.read()
+            except UnicodeDecodeError:
+                with open(filepath, 'r', encoding='latin-1') as f:
+                    content = f.read()
+        except Exception as e:
+            print(f"[错误] 读取文件失败: {e}")
+            exit_code = 1
+            continue
+
+        # 解析
+        items = parse_a2l(content)
+        if not args.quiet:
+            print(f"  解析到 {len(items)} 条可翻译文本")
+
+        if not items:
+            print("  未发现可翻译内容")
+            continue
+
+        # 加载进度
+        if args.load:
+            loaded_items, loaded_content = load_progress(args.load)
+            # 合并：用加载的翻译更新当前条目（按位置匹配）
+            if loaded_content == content:
+                items = loaded_items
+            else:
+                # 内容不匹配，按 name+original 匹配
+                loaded_map = {(i["type"], i["name"], i["original"]): i for i in loaded_items}
+                for item in items:
+                    key = (item["type"], item["name"], item["original"])
+                    if key in loaded_map and loaded_map[key]["translated"]:
+                        item["translated"] = loaded_map[key]["translated"]
+                        item["status"] = loaded_map[key]["status"]
+                if not args.quiet:
+                    print(f"  已合并加载的翻译（文件内容已变化）")
+
+        # 自动翻译
+        if args.auto_translate:
+            translated_count = auto_translate(
+                items, glossary, args.source, args.target,
+                batch_size=args.batch, delay=args.delay,
+                baidu_appid=getattr(args, "baidu_appid", None),
+                baidu_secret=getattr(args, "baidu_secret", None),
+                ssl_ctx=_ssl_context,
+            )
+            if translated_count == 0:
+                print("  所有条目已翻译完成")
+
+        # 导出 CSV
+        if args.extract:
+            export_csv(items, args.extract)
+
+        # 导出 JSON
+        if args.extract_json:
+            export_json(items, args.extract_json)
+
+        # 从 CSV 导入
+        if args.apply:
+            apply_csv(items, args.apply)
+
+        # 保存进度
+        if args.save:
+            save_progress(items, content, args.save)
+
+        # 列出字符串
+        if args.list is not None:
+            list_strings(items, limit=args.list)
+
+        # 确定输出文件
+        if len(args.files) == 1 and args.output:
+            out_path = args.output
+        elif args.output:
+            # 多文件时，output 作为目录
+            out_dir = Path(args.output)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = out_dir / path.name
+        else:
+            stem = path.stem
+            out_path = Path(path.parent) / f"{stem}_translated.a2l"
+
+        # 输出翻译后的文件
+        translated_content = rebuild_a2l(content, items)
+        changed = sum(1 for i in items if i["translated"] and i["translated"] != i["original"])
+
+        if changed > 0:
+            with open(out_path, 'w', encoding='utf-8') as f:
+                f.write(translated_content)
+            if not args.quiet:
+                print(f"  已输出: {out_path}  ({changed} 处翻译)")
+        else:
+            if not args.quiet:
+                print(f"  无翻译内容，未生成输出文件")
+
+        # 打印摘要
+        if not args.quiet:
+            print_summary(items)
+
+        # ── 多源词典验证 ──
+        if args.verify and _HAS_MULTI_DICT:
+            verified = [(i["original"], i["translated"])
+                       for i in items if i.get("translated")]
+            if verified:
+                print(f"\n{'='*60}")
+                print("  🌐 8大权威词典交叉验证报告")
+                print(f"{'='*60}")
+                md = get_dictionary()
+                vr = md.batch_verify(verified, progress_callback=None)
+                passed = sum(1 for _, _, v, _, _ in vr if v)
+                total = len(vr)
+                rate = passed / total * 100 if total > 0 else 0
+                print(f"  验证总数: {total}")
+                print(f"  ✅ 通过: {passed}")
+                print(f"  ⚠️  未通过: {total - passed}")
+                print(f"  📊 通过率: {rate:.1f}%")
+                if total - passed > 0:
+                    print(f"\n  未通过条目:")
+                    for en, zh, v, conf, alt in vr:
+                        if not v and alt:
+                            print(f"    • {en}")
+                            print(f"      当前: {zh}")
+                            print(f"      建议: {alt}  (置信度: {conf})")
+                print(f"{'='*60}")
+
+    return exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())
