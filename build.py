@@ -52,13 +52,11 @@ def find_python():
     # 2. 常用虚拟环境路径
     for pattern in [
         Path.home() / ".workbuddy/binaries/python/envs/default/Scripts/python.exe",
-        Path.home() / "AppData/Local/Programs/Python/Python*/python.exe",
-        Path("C:/Python3*/python.exe"),
+        Path.home() / "AppData/Local/Programs/Python/Python312/python.exe",
+        Path.home() / "AppData/Local/Programs/Python/Python311/python.exe",
     ]:
-        matches = list(Path.home().parent.glob(str(pattern)) if "*" in str(pattern) else [pattern])
-        for m in matches:
-            if m.exists() and m not in candidates:
-                candidates.append(m)
+        if pattern.exists() and pattern not in candidates:
+            candidates.append(pattern)
     # 3. PATH 中的 python
     for cmd in ["python3", "python"]:
         result = subprocess.run(["where", cmd], capture_output=True, text=True)
