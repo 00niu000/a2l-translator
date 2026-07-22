@@ -197,7 +197,8 @@ def main():
         custom.update(template)
         if save_custom_glossary(custom):
             print(f"\n  ✓ 已合并到 custom_glossary.json")
-            print(f"  共 {len(custom)} 条，其中 {len([v for v in template if not v])} 条待翻译")
+            untranslated = sum(1 for v in template.values() if not v)
+            print(f"  共 {len(custom)} 条，其中 {untranslated} 条待翻译")
             print(f"  💡 打开 custom_glossary.json，为每个 \"\" 填写中文翻译即可")
 
     return 0

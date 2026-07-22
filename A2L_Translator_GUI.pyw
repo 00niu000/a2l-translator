@@ -515,7 +515,7 @@ def api_translate_one(text, src_lang, tgt_lang, ssl_ctx, timeout=15):
     params = {"q": text, "langpair": f"{src_lang}|{tgt_lang}"}
     url = "https://api.mymemory.translated.net/get?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={
-        "User-Agent": "Mozilla/5.0 (compatible; A2L-Translator/1.0)"})
+        "User-Agent": "Mozilla/5.0 (compatible; A2L-Translator/2.9.5)"})
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=ssl_ctx) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -532,7 +532,7 @@ def api_translate_batch(texts, src_lang, tgt_lang, ssl_ctx, timeout=15):
     params = {"q": combined, "langpair": f"{src_lang}|{tgt_lang}"}
     url = "https://api.mymemory.translated.net/get?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={
-        "User-Agent": "Mozilla/5.0 (compatible; A2L-Translator/1.0)"})
+        "User-Agent": "Mozilla/5.0 (compatible; A2L-Translator/2.9.5)"})
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=ssl_ctx) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -982,7 +982,7 @@ class A2LTranslatorGUI:
                  fg="#93C5FD", bg=COLORS["header_end"]).pack(anchor=tk.W)
 
         # 版本号
-        _version_text = "v2.9.1 · 单文件版"
+        _version_text = "v2.9.5 · 单文件版"
         self._version_label = tk.Label(inner, text=_version_text, font=("Consolas", 8),
                  fg="#60A5FA", bg=COLORS["header_end"])
         self._version_label.pack(side=tk.RIGHT, anchor=tk.S)
@@ -1569,9 +1569,12 @@ class A2LTranslatorGUI:
             new_values = list(values)
             new_values[3] = new_val
             self.tree.item(item, values=new_values)
-            idx = self.tree.index(item)
-            if idx < len(self.entries):
-                self.entries[idx]["translated"] = new_val
+            # 通过 entry_id 查找真实索引，避免过滤器导致索引错位
+            entry_id = int(values[0])
+            for i, entry in enumerate(self.entries):
+                if entry["id"] == entry_id:
+                    entry["translated"] = new_val
+                    break
             self._refresh_row_tags(item)
             self._update_stats()
 
@@ -1582,9 +1585,11 @@ class A2LTranslatorGUI:
             vals = list(self.tree.item(item, "values"))
             vals[3] = ""
             self.tree.item(item, values=vals)
-            idx = self.tree.index(item)
-            if idx < len(self.entries):
-                self.entries[idx]["translated"] = ""
+            entry_id = int(vals[0])
+            for entry in self.entries:
+                if entry["id"] == entry_id:
+                    entry["translated"] = ""
+                    break
             self._refresh_row_tags(item)
         self._update_stats()
 
@@ -1605,9 +1610,11 @@ class A2LTranslatorGUI:
             if result:
                 vals[3] = result
                 self.tree.item(item, values=vals)
-                idx = self.tree.index(item)
-                if idx < len(self.entries):
-                    self.entries[idx]["translated"] = result
+                entry_id = int(vals[0])
+                for entry in self.entries:
+                    if entry["id"] == entry_id:
+                        entry["translated"] = result
+                        break
                 self._refresh_row_tags(item)
         self._update_stats()
 
@@ -2736,7 +2743,7 @@ class A2LTranslatorGUI:
             exe_dir = Path(__file__).parent
 
         msg = (
-            f"当前版本: v2.3.0\n\n"
+            f"当前版本: v2.9.5\n\n"
             f"━━━━━ 单文件纯净版 ━━━━━\n\n"
             f"📦 所有功能集成在一个 exe 中\n"
             f"   术语库 · 词典引擎 · 翻译核心\n"

@@ -18,7 +18,6 @@ A2L 文件翻译工具 (CLI)
 """
 
 import sys
-import os
 import re
 import json
 import csv
@@ -29,7 +28,6 @@ import urllib.request
 import urllib.parse
 import urllib.error
 from pathlib import Path
-from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 
@@ -52,7 +50,7 @@ except ImportError:
 _ssl_context = None
 
 # ── 导入共享词典 (1600+ 英文 + 300+ 德文) ──
-from glossary_data import BUILTIN_GLOSSARY, GERMAN_GLOSSARY
+from glossary_data import BUILTIN_GLOSSARY, GERMAN_GLOSSARY, SMART_KEYWORDS
 
 # ── 导入翻译记忆库 ──
 from translation_memory import (
@@ -611,8 +609,9 @@ def post_verify_translation(item, glossary, index):
     translated = item["translated"]
     exact_dict, _, _ = index
 
-    # 查找原文提到的所有术语
-    for en_term, zh_term in list(exact_dict.items())[:200]:  # 只检查最常见的200个术语
+    # 查找原文提到的术语（按术语长度降序，长术语优先更精确）
+    sorted_terms = sorted(exact_dict.items(), key=lambda x: -len(x[0]))[:500]
+    for en_term, zh_term in sorted_terms:
         en_lower = en_term.lower()
         if en_lower in original.lower():
             zh_in_result = any(
@@ -824,7 +823,7 @@ def auto_translate(items, glossary, src_lang, tgt_lang, batch_size=8, delay=0.6,
     dict_count = apply_glossary(items, glossary)
 
     # ═══ 阶段4：逐词智能翻译 ═══
-    smart_count = apply_smart_translate(items, glossary, show_progress=True)
+    smart_count = apply_smart_translate(items, glossary, extra_keywords=SMART_KEYWORDS, show_progress=True)
 
     # ═══ 阶段4.5：深度模糊搜索（仿 DeepL 术语库匹配）═══
     fuzzy_count = 0
