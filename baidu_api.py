@@ -118,6 +118,7 @@ def baidu_translate_batch(
         "appid": appid,
         "salt":  salt,
         "sign":  sign,
+        "domain": "auto",  # 汽车领域专用模型，精准度提升显著
     }
 
     # 编码为 URL 参数

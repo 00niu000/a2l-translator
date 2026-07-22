@@ -54,6 +54,13 @@ _ssl_context = None
 # ── 导入共享词典 (1600+ 英文 + 300+ 德文) ──
 from glossary_data import BUILTIN_GLOSSARY, GERMAN_GLOSSARY
 
+# ── 导入翻译记忆库 ──
+from translation_memory import (
+    load_translation_memory, save_translation_memory,
+    apply_tm, update_tm_from_items,
+    load_custom_glossary, merge_glossary,
+)
+
 # ── 导入多源词典验证 (8大权威词典) ──
 try:
     from dictionary_resources import MultiSourceDictionary, get_dictionary
@@ -780,31 +787,44 @@ def auto_translate(items, glossary, src_lang, tgt_lang, batch_size=8, delay=0.6,
                    baidu_appid=None, baidu_secret=None, ssl_ctx=None):
     """
     自动翻译所有未翻译条目。
-    流程：预处理 → 词典匹配 → 逐词翻译 → API 翻译 → 后验证
-    返回翻译成功的条目数。
+    流程：预处理 → TM → 自定义词典 → 内建词典 → 逐词 → API(domain=auto) → 后验证 → 更新TM
     """
-    # ═══ 阶段0：预处理 — 缩写展开 + 复合词分解 ═══
+    # ═══ 阶段0：加载 TM 和自定义词典 ═══
+    tm = load_translation_memory()
+    custom_glossary = load_custom_glossary()
+    if custom_glossary:
+        glossary = merge_glossary(glossary, custom_glossary)
+        print(f"  自定义词典: {len(custom_glossary)} 条已合并")
+
+    # ═══ 阶段1：预处理 — 缩写展开 + 复合词分解 ═══
     preprocess_count = 0
     for item in items:
         if item["status"] == "untranslated":
             decomposed = preprocess_text(item["original"])
             if decomposed != item["original"]:
-                item["_original_raw"] = item["original"]  # 保留原文
+                item["_original_raw"] = item["original"]
                 item["original"] = decomposed
                 preprocess_count += 1
     if preprocess_count:
         print(f"  预处理: {preprocess_count} 条复合词已分解")
 
-    # ═══ 阶段1：词典匹配 ═══
+    # ═══ 阶段2：翻译记忆库（最高优先级，精确匹配）═══
+    tm_count = apply_tm(items, tm)
+
+    # ═══ 阶段3：词典匹配 ═══
     dict_count = apply_glossary(items, glossary)
 
-    # ═══ 阶段2：逐词智能翻译 ═══
+    # ═══ 阶段4：逐词智能翻译 ═══
     smart_count = apply_smart_translate(items, glossary, show_progress=True)
 
     # 找出仍需 API 翻译的
     untranslated = [i for i in items if i["status"] == "untranslated"]
     if not untranslated:
-        return dict_count + smart_count
+        # 更新 TM
+        new_tm = update_tm_from_items(tm, items)
+        if new_tm:
+            print(f"  TM 更新: +{new_tm} 条")
+        return tm_count + dict_count + smart_count
 
     total = len(untranslated)
     api_count_box = [0]
@@ -880,15 +900,18 @@ def auto_translate(items, glossary, src_lang, tgt_lang, batch_size=8, delay=0.6,
     update_bar(total, api_count)
     print()
 
-    # ═══ 阶段4：翻译后验证 ═══
+    # ═══ 阶段6：翻译后验证 + TM 更新 ═══
     verify_count = 0
     glossary_index = build_glossary_index(glossary)
     for item in items:
-        if item.get("translated") and item["status"] in ("auto", "auto_corrected"):
+        if item.get("translated") and item["status"] in ("auto", "auto_corrected", "tm"):
             pre_status = item["status"]
             post_verify_translation(item, glossary, glossary_index)
             if item["status"] == "auto_corrected" and pre_status != "auto_corrected":
                 verify_count += 1
+
+    # ═══ 阶段7：更新翻译记忆库 ═══
+    new_tm = update_tm_from_items(tm, items)
 
     # 恢复预处理中修改的原文
     restore_count = 0
@@ -897,12 +920,14 @@ def auto_translate(items, glossary, src_lang, tgt_lang, batch_size=8, delay=0.6,
             item["original"] = item.pop("_original_raw")
             restore_count += 1
 
-    total_translated = dict_count + smart_count + api_count
-    print(f"  完成: 词典 {dict_count} + 逐词 {smart_count} + API {api_count} [{engine}]")
+    total_translated = tm_count + dict_count + smart_count + api_count
+    print(f"  完成: TM {tm_count} + 词典 {dict_count} + 逐词 {smart_count} + API {api_count} [{engine}]")
     if preprocess_count:
         print(f"  预处理: {preprocess_count} 复合词分解")
     if verify_count:
         print(f"  后验证: {verify_count} 条已修正")
+    if new_tm:
+        print(f"  TM 更新: +{new_tm} 条")
     return total_translated
 
 
