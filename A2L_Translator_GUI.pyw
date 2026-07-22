@@ -941,6 +941,9 @@ class A2LTranslatorGUI:
         else:
             self.ssl_ctx = None
 
+        # ── 启动时自动检查更新 ──
+        self.root.after(2000, lambda: self._auto_check_update())
+
     # ═══ UI 构建 ═══
 
     def _build_ui(self):
@@ -950,6 +953,16 @@ class A2LTranslatorGUI:
         self._build_toolbar()
         self._build_table()
         self._build_statusbar()
+
+    # ═══ 自动更新 ═══
+
+    def _auto_check_update(self):
+        """启动时静默检查更新"""
+        try:
+            from updater import check_and_notify
+            check_and_notify(self.root, silent=True)
+        except Exception:
+            pass
 
     def _build_header(self):
         header = tk.Frame(self.root, bg=COLORS["header_end"], height=72)
