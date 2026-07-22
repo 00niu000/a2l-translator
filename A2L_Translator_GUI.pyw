@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-A2L 文件翻译工具 - 图形界面版
+A2L/KP 文件翻译工具 - 图形界面版
 双击运行，拖放文件即可翻译
+支持 A2L (ASAP2) + KP (WinOLS Map Pack)
 """
 
 import sys
@@ -784,7 +785,7 @@ class DropZone(tk.Canvas):
                          font=("Microsoft YaHei UI", 11),
                          tags="text")
         self.create_text(cx, cy + 56,
-                         text="支持 .a2l 文件  |  内置 1700+ 中英德汽车专业术语词库",
+                         text="支持 .a2l / .kp 文件  |  内置 1700+ 中英德汽车专业术语词库",
                          fill=COLORS["text_muted"],
                          font=("Microsoft YaHei UI", 8),
                          tags="sub")
@@ -875,7 +876,7 @@ class EditDialog(tk.Toplevel):
 class A2LTranslatorGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("A2L 文件翻译工具")
+        self.root.title("A2L/KP 文件翻译工具")
         self.root.geometry("860x700")
         self.root.minsize(700, 550)
         self.root.configure(bg=COLORS["bg"])
@@ -1535,7 +1536,7 @@ class A2LTranslatorGUI:
     def _select_file(self):
         path = filedialog.askopenfilename(
             title="选择 A2L 文件",
-            filetypes=[("A2L 文件", "*.a2l"), ("所有文件", "*.*")]
+            filetypes=[("A2L/KP 文件", "*.a2l;*.kp"), ("A2L 文件", "*.a2l"), ("KP 文件", "*.kp"), ("所有文件", "*.*")]
         )
         if path:
             self.filepath.set(path)
@@ -2151,9 +2152,21 @@ class A2LTranslatorGUI:
         self.progress["value"] = 0
 
         def worker():
+            # 检测文件类型
+            is_kp = path.lower().endswith('.kp')
+
             # 阶段 1: 解析文件
             try:
-                entries, original_content = parse_a2l(path)
+                if is_kp:
+                    # KP 文件用专用解析器
+                    from kp_parser import parse_kp_header, extract_translatable as kp_extract
+                    with open(path, 'rb') as f:
+                        kp_data = f.read()
+                    kp_info = parse_kp_header(kp_data)
+                    entries = kp_extract(kp_info)
+                    original_content = kp_data
+                else:
+                    entries, original_content = parse_a2l(path)
             except Exception as e:
                 self.root.after(0, lambda: messagebox.showerror("解析错误", f"无法解析文件:\n{e}"))
                 self.root.after(0, lambda: self._set_status("解析失败", "error"))
@@ -2545,7 +2558,7 @@ class A2LTranslatorGUI:
         path = filedialog.asksaveasfilename(
             title="导出翻译后 A2L",
             defaultextension=".a2l",
-            filetypes=[("A2L 文件", "*.a2l"), ("所有文件", "*.*")]
+            filetypes=[("A2L/KP 文件", "*.a2l;*.kp"), ("A2L 文件", "*.a2l"), ("KP 文件", "*.kp"), ("所有文件", "*.*")]
         )
         if not path:
             return
@@ -2558,9 +2571,17 @@ class A2LTranslatorGUI:
 
         def worker():
             try:
-                content = apply_translations(self.original_content, self.entries)
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(content)
+                is_kp = path.lower().endswith('.kp')
+                if is_kp and isinstance(self.original_content, bytes):
+                    # KP 文件二进制写回
+                    from kp_parser import rebuild_kp
+                    new_data = rebuild_kp(self.original_content, self.entries)
+                    with open(path, "wb") as f:
+                        f.write(new_data)
+                else:
+                    content = apply_translations(self.original_content, self.entries)
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write(content)
                 self.root.after(0, lambda: (
                     self.progress.stop(),
                     self.progress.configure(mode="determinate", value=100),
