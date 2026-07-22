@@ -222,7 +222,68 @@ def calc_checksum32(data):
     return total & 0xFFFFFFFF
 
 
-def checksum_file(filepath, algorithms=None):
+def calc_cvn(data):
+    """
+    CVN (Calibration Verification Number) 计算
+    OBD 法规要求的标定验证号，用于排放相关 ECU 数据完整性校验。
+    算法: CRC32 后取反
+    """
+    crc = calc_crc32_custom(data)
+    return crc ^ 0xFFFFFFFF  # 取反
+
+
+def calc_bosch_crc32(data):
+    """Bosch 常用 CRC32 变体 (poly=0x04C11DB7, init=0xFFFFFFFF, 不取反)"""
+    crc = 0xFFFFFFFF
+    poly = 0x04C11DB7
+    for byte in data:
+        crc ^= byte << 24
+        for _ in range(8):
+            if crc & 0x80000000:
+                crc = (crc << 1) ^ poly
+            else:
+                crc <<= 1
+            crc &= 0xFFFFFFFF
+    return crc
+
+
+def calc_crc8(data, poly=0x2F, init=0xFF):
+    """CRC8 (汽车常用: poly=0x2F)"""
+    crc = init
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            if crc & 0x80:
+                crc = ((crc << 1) ^ poly) & 0xFF
+            else:
+                crc = (crc << 1) & 0xFF
+    return crc
+
+
+def calc_xor_checksum(data):
+    """XOR 累加校验（简单 ECU 常用）"""
+    result = 0
+    for byte in data:
+        result ^= byte
+    return result
+
+
+def checksum_range(data, start_addr, end_addr):
+    """计算指定地址范围的校验和"""
+    if start_addr < 0 or end_addr > len(data) or start_addr >= end_addr:
+        return None
+    chunk = data[start_addr:end_addr]
+    return {
+        'range': f"0x{start_addr:06X}-0x{end_addr:06X} ({len(chunk)} bytes)",
+        'crc16': f"{calc_crc16(chunk):04X}",
+        'crc32': f"{zlib.crc32(chunk):08X}",
+        'sum16': f"{calc_checksum16(chunk):04X}",
+        'sum32': f"{calc_checksum32(chunk):08X}",
+        'cvn': f"{calc_cvn(chunk):08X}" if len(chunk) > 0 else "N/A",
+    }
+
+
+def checksum_file(filepath, algorithms=None, ranges=None):
     """计算文件的各种校验和"""
     data, fmt = load_firmware(filepath)
 
@@ -230,29 +291,60 @@ def checksum_file(filepath, algorithms=None):
         print("错误: 无法加载文件")
         return
 
-    algs = algorithms or ['crc16', 'crc32', 'sum16', 'sum32', 'md5']
+    algs = algorithms or ['all']
 
-    print(f"\n  {'='*50}")
+    print(f"\n  {'='*55}")
     print(f"  校验和计算")
-    print(f"  {'='*50}")
+    print(f"  {'='*55}")
     print(f"  文件: {Path(filepath).name} ({len(data):,} bytes, {fmt})")
-    print(f"  {'─'*50}")
+    print(f"  {'─'*55}")
 
     results = {}
-    if 'crc16' in algs:
+    if 'all' in algs or 'crc8' in algs:
+        results['CRC8 (poly=0x2F)'] = f"{calc_crc8(data):02X}"
+    if 'all' in algs or 'crc16' in algs:
         results['CRC16-CCITT'] = f"{calc_crc16(data):04X}"
-    if 'crc32' in algs:
-        results['CRC32(zlib)'] = f"{zlib.crc32(data):08X}"
-        results['CRC32(custom)'] = f"{calc_crc32_custom(data):08X}"
-    if 'sum16' in algs:
+    if 'all' in algs or 'crc32' in algs:
+        results['CRC32 (standard)'] = f"{zlib.crc32(data):08X}"
+        results['CRC32 (Bosch)'] = f"{calc_bosch_crc32(data):08X}"
+    if 'all' in algs or 'cvn' in algs:
+        results['CVN (OBD)'] = f"{calc_cvn(data):08X}"
+    if 'all' in algs or 'sum' in algs:
         results['Checksum16'] = f"{calc_checksum16(data):04X}"
-    if 'sum32' in algs:
         results['Checksum32'] = f"{calc_checksum32(data):08X}"
-    if 'md5' in algs:
+    if 'all' in algs or 'xor' in algs:
+        results['XOR Checksum'] = f"{calc_xor_checksum(data):02X}"
+    if 'all' in algs or 'md5' in algs:
         results['MD5'] = hashlib_md5_hex(data)
 
-    for name, value in results.items():
-        print(f"  {name:<20s}  0x{value}")
+    # 分类显示
+    print(f"  【CRC 类】")
+    for k in ['CRC8 (poly=0x2F)', 'CRC16-CCITT', 'CRC32 (standard)', 'CRC32 (Bosch)']:
+        if k in results: print(f"    {k:<20s} 0x{results[k]}")
+    print(f"  【OBD 法规】")
+    for k in ['CVN (OBD)']:
+        if k in results: print(f"    {k:<20s} 0x{results[k]}")
+    print(f"  【累加和】")
+    for k in ['Checksum16', 'Checksum32', 'XOR Checksum']:
+        if k in results: print(f"    {k:<20s} 0x{results[k]}")
+    print(f"  【哈希】")
+    for k in ['MD5']:
+        if k in results: print(f"    {k:<20s} 0x{results[k]}")
+
+    # 地址范围校验
+    if ranges:
+        print(f"\n  【指定地址范围】")
+        for r in ranges:
+            parts = r.split('-')
+            if len(parts) == 2:
+                try:
+                    sa = int(parts[0], 16) if parts[0].startswith('0x') else int(parts[0])
+                    ea = int(parts[1], 16) if parts[1].startswith('0x') else int(parts[1])
+                    res = checksum_range(data, sa, ea)
+                    if res:
+                        print(f"    {res['range']}")
+                        print(f"      CRC16: 0x{res['crc16']}  CRC32: 0x{res['crc32']}  CVN: 0x{res['cvn']}")
+                except: pass
 
 
 # ══════════════════════════════════════════════════════════
@@ -349,8 +441,10 @@ def main():
     # checksum
     cks_parser = sub.add_parser('checksum', help='计算校验和')
     cks_parser.add_argument('file')
-    cks_parser.add_argument('--algo', nargs='+', choices=['crc16','crc32','sum16','sum32','md5','all'],
+    cks_parser.add_argument('--algo', nargs='+', choices=['crc8','crc16','crc32','cvn','sum','xor','md5','all'],
                            default=['all'], help='算法 (默认: all)')
+    cks_parser.add_argument('--range', nargs='+', metavar='START-END',
+                           help='指定地址范围 (如: 0x0-0xFFF 或 0x8000-0xFFFF)')
 
     # convert
     cnv_parser = sub.add_parser('convert', help='文件格式转换')
@@ -362,8 +456,7 @@ def main():
     if args.cmd == 'compare':
         compare_firmware(args.file1, args.file2, show_all=args.all)
     elif args.cmd == 'checksum':
-        algs = ['crc16','crc32','sum16','sum32','md5'] if 'all' in args.algo else args.algo
-        checksum_file(args.file, algs)
+        checksum_file(args.file, algorithms=args.algo, ranges=getattr(args, 'range', None))
     elif args.cmd == 'convert':
         convert_file(args.input, args.output)
     else:

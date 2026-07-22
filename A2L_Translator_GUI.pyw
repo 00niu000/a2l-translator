@@ -1188,80 +1188,69 @@ class A2LTranslatorGUI:
         threading.Thread(target=worker, daemon=True).start()
 
     def _build_toolbar(self):
-        """操作按钮栏，卡片式"""
+        """操作按钮栏，两行布局"""
         card = tk.Frame(self.root, bg=COLORS["card"], bd=0,
-                        highlightbackground=COLORS["border"],
-                        highlightthickness=1)
+                        highlightbackground=COLORS["border"], highlightthickness=1)
         card.pack(fill=tk.X, padx=15, pady=(0, 8))
 
-        inner = tk.Frame(card, bg=COLORS["card"])
-        inner.pack(fill=tk.X, padx=12, pady=8)
+        # ═══ 第一行：核心工作流 ═══
+        row1 = tk.Frame(card, bg=COLORS["card"])
+        row1.pack(fill=tk.X, padx=12, pady=(10, 4))
 
-        # 左侧：主操作
-        left = tk.Frame(inner, bg=COLORS["card"])
-        left.pack(side=tk.LEFT)
+        tk.Label(row1, text="核心流程", font=("Microsoft YaHei UI", 8),
+                 fg=COLORS["sub"], bg=COLORS["card"]).pack(side=tk.LEFT, padx=(0, 8))
 
         steps = [
-            ("1. 加载", self._load_file, "Primary.TButton"),
-            ("2. 词典匹配", self._glossary_translate, "Secondary.TButton"),
-            ("3. 自动翻译", self._auto_translate, "Primary.TButton"),
-            ("4. 导出 A2L", self._export, "Success.TButton"),
+            ("📂 选择文件", self._load_file, "Primary.TButton"),
+            ("📖 词典匹配", self._glossary_translate, "Secondary.TButton"),
+            ("🚀 自动翻译", self._auto_translate, "Primary.TButton"),
+            ("💾 导出文件", self._export, "Success.TButton"),
         ]
         for i, (text, cmd, style) in enumerate(steps):
-            btn = ttk.Button(left, text=text, command=cmd, style=style)
-            btn.pack(side=tk.LEFT, padx=(0, 6))
+            btn = ttk.Button(row1, text=text, command=cmd, style=style)
+            btn.pack(side=tk.LEFT, padx=(0, 5))
             setattr(self, f"btn_{i}", btn)
 
-        # 分隔
-        sep1 = tk.Frame(inner, bg=COLORS["border"], width=1)
-        sep1.pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=2)
+        # ═══ 第二行：工具 & 辅助 ═══
+        row2 = tk.Frame(card, bg=COLORS["card"])
+        row2.pack(fill=tk.X, padx=12, pady=(2, 10))
 
-        # 多源验证按钮（8大词典）
-        self.btn_verify = ttk.Button(left, text="🌐 多源验证",
-                                     command=self._multi_source_verify,
-                                     style="Accent.TButton")
-        self.btn_verify.pack(side=tk.LEFT, padx=(4, 6))
+        tk.Label(row2, text="工具辅助", font=("Microsoft YaHei UI", 8),
+                 fg=COLORS["sub"], bg=COLORS["card"]).pack(side=tk.LEFT, padx=(0, 8))
 
-        # 升级帮助按钮
-        self.btn_upgrade = ttk.Button(left, text="📦 升级",
-                                      command=self._show_upgrade_info,
-                                      style="Outline.TButton")
-        self.btn_upgrade.pack(side=tk.LEFT, padx=(0, 0))
-
-        # 分隔
-        sep = tk.Frame(inner, bg=COLORS["border"], width=1)
-        sep.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=2)
-
-        # 右侧：辅助操作
-        right = tk.Frame(inner, bg=COLORS["card"])
-        right.pack(side=tk.LEFT)
-
-        aux_actions = [
-            ("导出 CSV", self._export_csv),
-            ("导入 CSV", self._import_csv),
-            ("保存进度", self._save_progress),
-            ("恢复进度", self._load_progress),
-        ]
-        for text, cmd in aux_actions:
-            btn = ttk.Button(right, text=text, command=cmd, style="Outline.TButton")
-            btn.pack(side=tk.LEFT, padx=(0, 6))
+        # 标定工具组
+        cal_frame = tk.Frame(row2, bg=COLORS["border"])
+        cal_frame.pack(side=tk.LEFT, padx=(0, 6))
+        cal_inner = tk.Frame(cal_frame, bg=COLORS["card"])
+        cal_inner.pack(padx=1, pady=1)
+        tk.Label(cal_inner, text="标定", font=("Microsoft YaHei UI", 7),
+                 fg=COLORS["sub"], bg=COLORS["card"]).pack(side=tk.LEFT, padx=(4, 2))
+        for text, cmd in [("对比", self._tool_compare), ("校验", self._tool_checksum), ("转换", self._tool_convert)]:
+            btn = tk.Button(cal_inner, text=text, command=cmd, font=("Microsoft YaHei UI", 8),
+                           bg=COLORS["card"], fg=COLORS["text"], borderwidth=0,
+                           cursor="hand2", padx=6, pady=1,
+                           activebackground=COLORS["bg"])
+            btn.pack(side=tk.LEFT)
 
         # 分隔
-        sep2 = tk.Frame(inner, bg=COLORS["border"], width=1)
-        sep2.pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=2)
+        tk.Frame(row2, bg=COLORS["border"], width=1).pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=1)
 
-        # 标定工具
-        tools_frame = tk.Frame(inner, bg=COLORS["card"])
-        tools_frame.pack(side=tk.LEFT)
+        # 数据辅助组
+        data_frame = tk.Frame(row2, bg=COLORS["card"])
+        data_frame.pack(side=tk.LEFT, padx=(0, 6))
+        for text, cmd in [("导出CSV", self._export_csv), ("导入CSV", self._import_csv),
+                          ("保存进度", self._save_progress), ("恢复进度", self._load_progress)]:
+            btn = ttk.Button(data_frame, text=text, command=cmd, style="Outline.TButton")
+            btn.pack(side=tk.LEFT, padx=(0, 3))
 
-        tools = [
-            ("数据对比", self._tool_compare),
-            ("校验和", self._tool_checksum),
-            ("格式转换", self._tool_convert),
-        ]
-        for text, cmd in tools:
-            btn = ttk.Button(tools_frame, text=f"🔧 {text}", command=cmd, style="Outline.TButton")
-            btn.pack(side=tk.LEFT, padx=(0, 4))
+        # 分隔
+        tk.Frame(row2, bg=COLORS["border"], width=1).pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=1)
+
+        # 其他
+        self.btn_verify = ttk.Button(row2, text="🌐 验证", command=self._multi_source_verify, style="Accent.TButton")
+        self.btn_verify.pack(side=tk.LEFT, padx=(0, 3))
+        self.btn_upgrade = ttk.Button(row2, text="📦 升级", command=self._show_upgrade_info, style="Outline.TButton")
+        self.btn_upgrade.pack(side=tk.LEFT)
 
     # ── 标定工具方法 ──
 
