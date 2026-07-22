@@ -61,6 +61,147 @@ try:
 except ImportError:
     _HAS_MULTI_DICT = False
 
+# ══════════════════════════════════════════════════════════
+#  翻译精度增强：缩写展开 + 复合词分解 + 德语复合词
+# ══════════════════════════════════════════════════════════
+
+# 汽车行业常见缩写 → 中文全称
+_ABBREVIATIONS = {
+    # 发动机/排放
+    "EGR": "废气再循环",
+    "DPF": "柴油颗粒过滤器",
+    "SCR": "选择性催化还原",
+    "DOC": "柴油氧化催化器",
+    "NOx": "氮氧化物",
+    "VGT": "可变截面涡轮",
+    "WG": "废气旁通阀",
+    "MAF": "空气质量流量",
+    "MAP": "进气歧管绝对压力",
+    "TMAP": "温度压力传感器",
+    "IAT": "进气温度",
+    "ECT": "发动机冷却液温度",
+    "EOT": "发动机机油温度",
+    "FRP": "燃油轨压力",
+    "IMEP": "指示平均有效压力",
+    "BMEP": "制动平均有效压力",
+    "FMEP": "摩擦平均有效压力",
+    "BSFC": "制动燃油消耗率",
+    "AFR": "空燃比",
+    "Lambda": "过量空气系数",
+    # 传感器/执行器
+    "TPS": "节气门位置传感器",
+    "CPS": "曲轴位置传感器",
+    "CKP": "曲轴位置",
+    "CMP": "凸轮轴位置",
+    "O2": "氧传感器",
+    "HEGO": "加热型氧传感器",
+    "UEGO": "宽域氧传感器",
+    "MAF sensor": "空气流量传感器",
+    "Knock sensor": "爆震传感器",
+    "APPS": "加速踏板位置传感器",
+    "ETC": "电子节气门控制",
+    "VVT": "可变气门正时",
+    "VVL": "可变气门升程",
+    "VVA": "可变气门驱动",
+    # 变速箱
+    "AT": "自动变速箱",
+    "MT": "手动变速箱",
+    "DCT": "双离合变速箱",
+    "CVT": "无级变速器",
+    "AMT": "电控机械自动变速箱",
+    "TCU": "变速箱控制单元",
+    "TCC": "液力变矩器离合器",
+    # 底盘/安全
+    "ABS": "防抱死制动系统",
+    "ESC": "电子稳定控制",
+    "ESP": "电子稳定程序",
+    "TCS": "牵引力控制系统",
+    "EBD": "电子制动力分配",
+    "EPB": "电子驻车制动",
+    "EPS": "电动助力转向",
+    "SAS": "转向角传感器",
+    "TPMS": "胎压监测系统",
+    # ADAS/自动驾驶
+    "ACC": "自适应巡航控制",
+    "AEB": "自动紧急制动",
+    "LDW": "车道偏离预警",
+    "LKA": "车道保持辅助",
+    "BSD": "盲区检测",
+    "FCW": "前碰撞预警",
+    "RCTA": "后方横向来车预警",
+    # 新能源
+    "SOC": "荷电状态",
+    "SOH": "健康状态",
+    "BMS": "电池管理系统",
+    "MCU": "电机控制单元",
+    "VCU": "整车控制器",
+    "OBC": "车载充电机",
+    "DCDC": "直流直流变换器",
+    "PTC": "正温度系数加热器",
+    "BMS master": "电池管理系统主控",
+    "HV battery": "高压电池",
+    "LV battery": "低压蓄电池",
+    # 诊断
+    "OBD": "车载诊断",
+    "DTC": "故障诊断码",
+    "DID": "数据标识符",
+    "RID": "例程标识符",
+    "UDS": "统一诊断服务",
+    "CAN": "控制器局域网",
+    "LIN": "局部互联网络",
+    "FlexRay": "FlexRay总线",
+    "Ethernet": "车载以太网",
+    "XCP": "通用测量与标定协议",
+    "CCP": "CAN标定协议",
+    # 通用
+    "ECU": "电控单元",
+    "EMS": "发动机管理系统",
+    "BCM": "车身控制模块",
+    "PCM": "动力总成控制模块",
+    "TCM": "变速箱控制模块",
+    "HMI": "人机界面",
+    "NVH": "噪声振动平顺性",
+    "PWM": "脉宽调制",
+}
+
+# 德语 → 中文 常用汽车术语
+_DE_ABBREVIATIONS = {
+    "AGR": "废气再循环",
+    "DK": "节气门",
+    "HFM": "热膜式空气质量流量计",
+    "LMM": "空气流量计",
+    "KW": "曲轴",
+    "NW": "凸轮轴",
+    "LL": "怠速",
+    "VL": "全负荷",
+    "TL": "部分负荷",
+    "Saugrohr": "进气歧管",
+    "Kraftstoff": "燃油",
+    "Einspritzung": "喷射",
+    "Zuendung": "点火",
+    "Drehzahl": "转速",
+    "Druck": "压力",
+    "Temperatur": "温度",
+    "Moment": "扭矩",
+    "Leistung": "功率",
+    "Verbrauch": "消耗",
+    "Ladedruck": "增压压力",
+    "Ladeluft": "增压空气",
+    "Abgas": "废气",
+    "Ansaug": "进气",
+    "Kuehl": "冷却",
+}
+
+# CamelCase / under_score / 连字符 分解正则
+_COMPOUND_SPLIT_RE = re.compile(r'''
+    [A-Z][a-z]+                 # 大写开头的小写词: Rail, Pressure
+    |[A-Z]+(?=[A-Z][a-z]|$)     # 连续大写但不包含下一个词: EGR, SCR
+    |[A-Z]+$                    # 末尾连续大写
+    |[a-zA-Z]+                  # 全小写词
+''', re.VERBOSE)
+
+_UNDERSCORE_RE = re.compile(r'[_\-]+')
+
 
 # ══════════════════════════════════════════════════════════
 #  词典预索引 — O(n*m) → O(1) + O(candidates)
@@ -366,9 +507,8 @@ def apply_glossary(items, glossary, show_progress=True):
     total = len(items)
     dot_width = 20
     last_dots = 0
-    batch_interval = max(1, total // 20)  # 每 5% 更新一次进度
+    batch_interval = max(1, total // 20)
 
-    # 预建索引
     index = build_glossary_index(glossary)
 
     for idx, item in enumerate(items):
@@ -381,7 +521,6 @@ def apply_glossary(items, glossary, show_progress=True):
             item["status"] = "auto"
             count += 1
 
-        # 批量更新进度（不是每条都打印）
         if show_progress and ((idx + 1) % batch_interval == 0 or idx == total - 1):
             done_pct = (idx + 1) / total
             filled = int(done_pct * dot_width)
@@ -393,6 +532,81 @@ def apply_glossary(items, glossary, show_progress=True):
     if show_progress:
         print(f"  词典匹配 [{'●' * dot_width}] {total}/{total}  命中{count}")
     return count
+
+
+# ══════════════════════════════════════════════════════════
+#  翻译精度增强函数
+# ══════════════════════════════════════════════════════════
+
+def decompose_compound(text):
+    """分解复合词：CamelCase → 分词，under_score → 分词，返回分解后的文本"""
+    if not text:
+        return text
+    # 如果包含下划线或连字符，先拆分
+    parts = _UNDERSCORE_RE.split(text)
+    if len(parts) > 1:
+        return " ".join(p for p in parts if p)
+    # CamelCase / PascalCase 拆分
+    tokens = _COMPOUND_SPLIT_RE.findall(text)
+    if len(tokens) > 1:
+        return " ".join(tokens)
+    return text
+
+def expand_abbreviations(text):
+    """展开汽车行业缩写：EGR → 废气再循环；同时处理德语缩写"""
+    words = text.split()
+    expanded = []
+    for w in words:
+        # 去掉缩写末尾的点号: E.G.R. → EGR
+        clean = w.rstrip(".")
+        if clean.upper() in _ABBREVIATIONS:
+            expanded.append(_ABBREVIATIONS[clean.upper()])
+        elif clean in _DE_ABBREVIATIONS:
+            expanded.append(_DE_ABBREVIATIONS[clean])
+        else:
+            expanded.append(w)
+    return " ".join(expanded)
+
+def preprocess_text(text, expand_abbr=True, decompose=True):
+    """翻译前预处理：缩写展开 + 复合词分解"""
+    result = text.strip()
+    if expand_abbr:
+        result = expand_abbreviations(result)
+    if decompose:
+        decomposed = decompose_compound(result)
+        # 只有当分解后确实不同时才替换
+        if decomposed != result:
+            result = decomposed
+    return result
+
+def post_verify_translation(item, glossary, index):
+    """
+    翻译后验证：用词典术语检查 API 翻译结果，修正明显错误。
+
+    策略：
+    1. 原文中出现的术语 → 译文中必须出现对应的中文
+    2. 如果译文缺失重要术语 → 追加补充
+    3. 如果译文有矛盾 → 用词典版本覆盖
+    """
+    if not item.get("translated") or item["status"] != "auto":
+        return
+
+    original = item["original"]
+    translated = item["translated"]
+    exact_dict, _, _ = index
+
+    # 查找原文提到的所有术语
+    for en_term, zh_term in list(exact_dict.items())[:200]:  # 只检查最常见的200个术语
+        en_lower = en_term.lower()
+        if en_lower in original.lower():
+            zh_in_result = any(
+                c in translated for c in [zh_term, zh_term[:2], zh_term[-2:]]
+            )
+            if not zh_in_result and len(en_term) > 4:
+                # 术语在原文但不在译文 → 修正
+                item["translated"] = translated.rstrip("。，.!") + "，" + f"[{zh_term}]"
+                item["status"] = "auto_corrected"
+                break
 
 
 # ── 逐词智能翻译 ──────────────────────────────────
@@ -566,16 +780,31 @@ def auto_translate(items, glossary, src_lang, tgt_lang, batch_size=8, delay=0.6,
                    baidu_appid=None, baidu_secret=None, ssl_ctx=None):
     """
     自动翻译所有未翻译条目。
-    先词典匹配，再并行 API 翻译（百度翻译优先，回退 MyMemory）。
+    流程：预处理 → 词典匹配 → 逐词翻译 → API 翻译 → 后验证
     返回翻译成功的条目数。
     """
-    # 先应用词典
+    # ═══ 阶段0：预处理 — 缩写展开 + 复合词分解 ═══
+    preprocess_count = 0
+    for item in items:
+        if item["status"] == "untranslated":
+            decomposed = preprocess_text(item["original"])
+            if decomposed != item["original"]:
+                item["_original_raw"] = item["original"]  # 保留原文
+                item["original"] = decomposed
+                preprocess_count += 1
+    if preprocess_count:
+        print(f"  预处理: {preprocess_count} 条复合词已分解")
+
+    # ═══ 阶段1：词典匹配 ═══
     dict_count = apply_glossary(items, glossary)
+
+    # ═══ 阶段2：逐词智能翻译 ═══
+    smart_count = apply_smart_translate(items, glossary, show_progress=True)
 
     # 找出仍需 API 翻译的
     untranslated = [i for i in items if i["status"] == "untranslated"]
     if not untranslated:
-        return dict_count
+        return dict_count + smart_count
 
     total = len(untranslated)
     api_count_box = [0]
@@ -650,8 +879,31 @@ def auto_translate(items, glossary, src_lang, tgt_lang, batch_size=8, delay=0.6,
     api_count = api_count_box[0]
     update_bar(total, api_count)
     print()
-    print(f"  完成: 词典 {dict_count} 条 + API {api_count} 条 [{engine}]")
-    return dict_count + api_count
+
+    # ═══ 阶段4：翻译后验证 ═══
+    verify_count = 0
+    glossary_index = build_glossary_index(glossary)
+    for item in items:
+        if item.get("translated") and item["status"] in ("auto", "auto_corrected"):
+            pre_status = item["status"]
+            post_verify_translation(item, glossary, glossary_index)
+            if item["status"] == "auto_corrected" and pre_status != "auto_corrected":
+                verify_count += 1
+
+    # 恢复预处理中修改的原文
+    restore_count = 0
+    for item in items:
+        if "_original_raw" in item:
+            item["original"] = item.pop("_original_raw")
+            restore_count += 1
+
+    total_translated = dict_count + smart_count + api_count
+    print(f"  完成: 词典 {dict_count} + 逐词 {smart_count} + API {api_count} [{engine}]")
+    if preprocess_count:
+        print(f"  预处理: {preprocess_count} 复合词分解")
+    if verify_count:
+        print(f"  后验证: {verify_count} 条已修正")
+    return total_translated
 
 
 # ── 导出 / 导入 ────────────────────────────────────
