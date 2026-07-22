@@ -166,6 +166,18 @@ class App:
         if custom: self.glossary = merge_glossary(self.glossary, custom)
         self.glossary_index = build_glossary_index(self.glossary)
         self.tm = load_translation_memory()
+        # Load API config
+        self.cfg_path = (Path(__file__).parent if not getattr(sys, 'frozen', False) else Path(sys.executable).parent) / "config.json"
+        self.cfg = {}
+        try:
+            if self.cfg_path.exists():
+                self.cfg = json.load(open(self.cfg_path, encoding='utf-8'))
+        except: pass
+        self.api_choice = tk.StringVar(value=self.cfg.get("api", "baidu"))
+        self.baidu_appid = self.cfg.get("baidu_appid", "")
+        self.baidu_secret = self.cfg.get("baidu_secret", "")
+        self.deepl_key = self.cfg.get("deepl_key", "")
+        self.google_key = self.cfg.get("google_key", "")
 
     def _auto_check_update(self):
         try:
@@ -189,6 +201,14 @@ class App:
 
         tk.Label(inner, text="拖放文件  |  一键翻译  |  导出结果",
                  font=("Microsoft YaHei UI", 9), fg=C["sub"], bg=C["card"]).pack(side="left", padx=16)
+
+        # API status button
+        has_api = self.baidu_appid or self.deepl_key or self.google_key
+        api_name = self.cfg.get("api", "baidu").capitalize()
+        self.api_btn = tk.Button(inner, text=f"API: {api_name}", command=self._open_settings,
+                                  font=("Microsoft YaHei UI", 8), bg=C["ok"] if has_api else C["warn"],
+                                  fg="white", borderwidth=0, cursor="hand2", padx=10, pady=2)
+        self.api_btn.pack(side="right")
 
         # File bar
         file_bar = tk.Frame(self.root, bg=C["bg"])
@@ -248,9 +268,87 @@ class App:
         tk.Label(self.root, textvariable=self.stats_var, font=("Microsoft YaHei UI", 9, "bold"),
                  fg=C["accent"], bg=C["bg"]).pack(side="right", padx=20, pady=(0, 8))
 
-        # Drop target
-        self.root.drop_target_register("DND_Files")
-        self.root.dnd_bind("<<Drop>>", self._on_drop)
+        # Drop target (tkinterdnd2 optional)
+        try:
+            self.root.drop_target_register("DND_Files")
+            self.root.dnd_bind("<<Drop>>", self._on_drop)
+        except Exception:
+            pass
+
+    # ── Settings ──
+
+    def _open_settings(self):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("API 设置")
+        dlg.geometry("460x420")
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        tk.Label(dlg, text="翻译 API 配置", font=("Microsoft YaHei UI", 13, "bold")).pack(pady=(12, 2))
+        tk.Label(dlg, text="配置后自动保存，可随时切换引擎", font=("Microsoft YaHei UI", 9), fg=C["sub"]).pack()
+
+        # API selection
+        sel_frame = tk.Frame(dlg, bg="white")
+        sel_frame.pack(pady=(10, 4), padx=20, fill="x")
+        tk.Label(sel_frame, text="翻译引擎", font=("Microsoft YaHei UI", 10, "bold")).pack(anchor="w")
+        choices = [("百度翻译 (汽车领域模型)", "baidu"),
+                   ("DeepL (德/英→中最佳)", "deepl"),
+                   ("Google 翻译 (覆盖面最广)", "google")]
+        for label, val in choices:
+            tk.Radiobutton(sel_frame, text=label, variable=self.api_choice, value=val,
+                          font=("Microsoft YaHei UI", 9), bg="white", anchor="w").pack(anchor="w", pady=2)
+
+        # Baidu
+        bd = tk.LabelFrame(dlg, text="百度翻译", font=("Microsoft YaHei UI", 9, "bold"), padx=8, pady=4)
+        bd.pack(pady=(8, 2), padx=20, fill="x")
+        baidu_appid = tk.StringVar(value=self.baidu_appid)
+        baidu_secret = tk.StringVar(value=self.baidu_secret)
+        tk.Label(bd, text="APP ID", font=("Microsoft YaHei UI", 8)).pack(anchor="w")
+        tk.Entry(bd, textvariable=baidu_appid, font=("Consolas", 9), width=50).pack(fill="x", ipady=2)
+        tk.Label(bd, text="Secret", font=("Microsoft YaHei UI", 8)).pack(anchor="w")
+        tk.Entry(bd, textvariable=baidu_secret, font=("Consolas", 9), width=50, show="*").pack(fill="x", ipady=2)
+
+        # DeepL
+        dl = tk.LabelFrame(dlg, text="DeepL (推荐德/英→中)", font=("Microsoft YaHei UI", 9, "bold"), padx=8, pady=4)
+        dl.pack(pady=(4, 2), padx=20, fill="x")
+        deepl_key = tk.StringVar(value=self.deepl_key)
+        tk.Label(dl, text="API Key", font=("Microsoft YaHei UI", 8)).pack(anchor="w")
+        tk.Entry(dl, textvariable=deepl_key, font=("Consolas", 9), width=50, show="*").pack(fill="x", ipady=2)
+        tk.Label(dl, text="注册: deepl.com/pro-api  |  免费 50万字符/月", font=("Microsoft YaHei UI", 7), fg=C["sub"]).pack(anchor="w")
+
+        # Google
+        gl = tk.LabelFrame(dlg, text="Google 翻译", font=("Microsoft YaHei UI", 9, "bold"), padx=8, pady=4)
+        gl.pack(pady=(4, 2), padx=20, fill="x")
+        google_key = tk.StringVar(value=self.google_key)
+        tk.Label(gl, text="API Key", font=("Microsoft YaHei UI", 8)).pack(anchor="w")
+        tk.Entry(gl, textvariable=google_key, font=("Consolas", 9), width=50, show="*").pack(fill="x", ipady=2)
+        tk.Label(gl, text="注册: cloud.google.com/translate  |  免费 50万字符/月", font=("Microsoft YaHei UI", 7), fg=C["sub"]).pack(anchor="w")
+
+        def save():
+            self.api_choice_val = self.api_choice.get()
+            self.baidu_appid = baidu_appid.get().strip()
+            self.baidu_secret = baidu_secret.get().strip()
+            self.deepl_key = deepl_key.get().strip()
+            self.google_key = google_key.get().strip()
+            self.cfg.update({
+                "api": self.api_choice_val,
+                "baidu_appid": self.baidu_appid,
+                "baidu_secret": self.baidu_secret,
+                "deepl_key": self.deepl_key,
+                "google_key": self.google_key,
+            })
+            try:
+                json.dump(self.cfg, open(self.cfg_path, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+            except: pass
+            has_api = self.baidu_appid or self.deepl_key or self.google_key
+            self.api_btn.config(text=f"API: {self.api_choice_val.capitalize()}",
+                               bg=C["ok"] if has_api else C["warn"])
+            dlg.destroy()
+
+        tk.Button(dlg, text="保存配置", command=save, font=("Microsoft YaHei UI", 10, "bold"),
+                  bg=C["accent"], fg="white", borderwidth=0, padx=32, pady=5,
+                  cursor="hand2").pack(pady=10)
 
     # ── Actions ──
 
@@ -331,6 +429,31 @@ class App:
                     entry["translated"] = result[0]
                     entry["status"] = "auto"
                     smart_count += 1
+
+            # API translation for remaining
+            api_count = 0
+            remaining = [e for e in self.entries if not e.get("translated") and e["type"] not in ("COMPU_METHOD",)]
+            if remaining and len(remaining) > 0:
+                api = self.cfg.get("api", "baidu")
+                texts = [e["original"].strip() for e in remaining]
+                result = None
+
+                if api == "deepl" and self.deepl_key:
+                    from deepl_api import deepl_translate_batch
+                    result = deepl_translate_batch(texts, "auto", "zh-CN", self.deepl_key)
+                elif api == "google" and self.google_key:
+                    from google_api import google_translate_batch
+                    result = google_translate_batch(texts, "auto", "zh-CN", self.google_key)
+                elif self.baidu_appid and self.baidu_secret:
+                    from baidu_api import baidu_translate_batch
+                    result = baidu_translate_batch(texts, "auto", "zh-CN", self.baidu_appid, self.baidu_secret)
+
+                if result:
+                    for i, entry in enumerate(remaining):
+                        if i < len(result) and result[i] and result[i] != entry["original"]:
+                            entry["translated"] = result[i]
+                            entry["status"] = "auto"
+                            api_count += 1
 
             # Word-level fallback for remaining
             word_map = {}
