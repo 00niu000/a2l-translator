@@ -61,6 +61,13 @@ from translation_memory import (
     load_custom_glossary, merge_glossary,
 )
 
+# ── 导入模糊匹配引擎（仿 DeepL / Trados）──
+from fuzzy_engine import (
+    normalize_spelling, deep_fuzzy_search, find_fuzzy_match,
+    rate_confidence, classify_confidence, check_consistency,
+    hybrid_similarity,
+)
+
 # ── 导入多源词典验证 (8大权威词典) ──
 try:
     from dictionary_resources import MultiSourceDictionary, get_dictionary
@@ -817,14 +824,29 @@ def auto_translate(items, glossary, src_lang, tgt_lang, batch_size=8, delay=0.6,
     # ═══ 阶段4：逐词智能翻译 ═══
     smart_count = apply_smart_translate(items, glossary, show_progress=True)
 
+    # ═══ 阶段4.5：深度模糊搜索（仿 DeepL 术语库匹配）═══
+    fuzzy_count = 0
+    for item in items:
+        if item.get("translated"):
+            continue
+        result, confidence, source = deep_fuzzy_search(
+            item["original"], glossary, tm, threshold=0.65
+        )
+        if result:
+            item["translated"] = result
+            item["status"] = "tm" if "tm" in source else "auto"
+            item["_confidence"] = confidence
+            fuzzy_count += 1
+    if fuzzy_count:
+        print(f"  深度模糊搜索: {fuzzy_count} 条匹配 (类似DeepL术语库)")
+
     # 找出仍需 API 翻译的
-    untranslated = [i for i in items if i["status"] == "untranslated"]
+    untranslated = [i for i in items if not i.get("translated")]
     if not untranslated:
-        # 更新 TM
         new_tm = update_tm_from_items(tm, items)
         if new_tm:
             print(f"  TM 更新: +{new_tm} 条")
-        return tm_count + dict_count + smart_count
+        return tm_count + dict_count + smart_count + fuzzy_count
 
     total = len(untranslated)
     api_count_box = [0]
@@ -920,14 +942,29 @@ def auto_translate(items, glossary, src_lang, tgt_lang, batch_size=8, delay=0.6,
             item["original"] = item.pop("_original_raw")
             restore_count += 1
 
-    total_translated = tm_count + dict_count + smart_count + api_count
-    print(f"  完成: TM {tm_count} + 词典 {dict_count} + 逐词 {smart_count} + API {api_count} [{engine}]")
+    total_translated = tm_count + dict_count + smart_count + fuzzy_count + api_count
+    print(f"  完成: TM {tm_count} + 词典 {dict_count} + 逐词 {smart_count} + 模糊 {fuzzy_count} + API {api_count} [{engine}]")
     if preprocess_count:
         print(f"  预处理: {preprocess_count} 复合词分解")
     if verify_count:
         print(f"  后验证: {verify_count} 条已修正")
     if new_tm:
         print(f"  TM 更新: +{new_tm} 条")
+
+    # ═══ 阶段8：置信度评估（仿 Google Translate 质量报告）═══
+    confidence_results = {"high": 0, "medium": 0, "low": 0, "review": 0}
+    for item in items:
+        if item.get("translated"):
+            score = item.get("_confidence") or rate_confidence(item, glossary, tm)
+            item["_confidence"] = score
+            level, _ = classify_confidence(score)
+            confidence_results[level] += 1
+
+    total_trans_items = sum(confidence_results.values())
+    if total_trans_items > 0:
+        high_pct = confidence_results["high"] / total_trans_items * 100
+        print(f"  置信度: 🟢{confidence_results['high']} 🟡{confidence_results['medium']} 🟠{confidence_results['low']} 🔴{confidence_results['review']}  |  高置信率: {high_pct:.0f}%")
+
     return total_translated
 
 
