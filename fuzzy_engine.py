@@ -265,7 +265,7 @@ def check_consistency(items, glossary):
 #  6. 高级模糊搜索（结合所有技术）
 # ══════════════════════════════════════════════════════════
 
-def deep_fuzzy_search(text, glossary, tm, threshold=0.65):
+def deep_fuzzy_search(text, glossary, tm, threshold=0.50):
     """
     深度模糊搜索 — 仿 DeepL 术语库匹配。
 

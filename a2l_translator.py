@@ -922,6 +922,63 @@ def auto_translate(items, glossary, src_lang, tgt_lang, batch_size=8, delay=0.6,
     update_bar(total, api_count)
     print()
 
+    # ═══ 阶段5.5：终极降级翻译 — 保证 100% 覆盖率 ═══
+    fallback_count = 0
+    still_untranslated = [i for i in untranslated if not i.get("translated")]
+    if still_untranslated:
+        # 建立逐词翻译库（多数据源合并）
+        word_map = {}
+        # 从缩写表提取
+        word_map.update({k.lower(): v for k, v in _ABBREVIATIONS.items()})
+        # 从德语缩写提取
+        word_map.update({k.lower(): v for k, v in _DE_ABBREVIATIONS.items()})
+        # 从拼写规范表提取
+        word_map.update(_SPELL_VARIANTS)
+
+        # 从词典中提取单词→译文映射
+        for en, zh in glossary.items():
+            en_words = en.split()
+            zh_parts = zh.split()
+            # 如果英文和中文词数相同，建立1对1映射
+            if len(en_words) == len(zh_parts):
+                for ew, zw in zip(en_words, zh_parts):
+                    wl = ew.lower().strip(".,;:()[]{}<>!?/\\-_")
+                    if len(wl) >= 2 and wl not in word_map:
+                        word_map[wl] = zw.strip("，。；：")
+            # 单个单词 → 直接用完整译文
+            elif len(en_words) == 1 and len(en) >= 2:
+                wl = en.lower().strip(".,;:()[]{}<>!?/\\-_")
+                if wl not in word_map:
+                    word_map[wl] = zh
+
+        for item in still_untranslated:
+            text = item["original"]
+            words = text.split()
+            translated_words = []
+            has_translation = False
+            for w in words:
+                clean = w.lower().strip(".,;:()[]{}<>!?/\\-_")
+                # 跳过公式 Q=V 之类
+                if clean in word_map and not re.match(r'^[qv]=', clean):
+                    translated_words.append(word_map[clean])
+                    has_translation = True
+                else:
+                    # 尝试首字母大写匹配
+                    title_clean = clean[0].upper() + clean[1:] if clean else clean
+                    if title_clean in word_map:
+                        translated_words.append(word_map[title_clean])
+                        has_translation = True
+                    else:
+                        translated_words.append(w)
+            if has_translation:
+                result = " ".join(translated_words)
+                item["translated"] = result
+                item["status"] = "fallback"
+                fallback_count += 1
+
+        if fallback_count:
+            print(f"  终极降级翻译: {fallback_count} 条（逐词翻译兜底）")
+
     # ═══ 阶段6：翻译后验证 + TM 更新 ═══
     verify_count = 0
     glossary_index = build_glossary_index(glossary)
@@ -942,8 +999,8 @@ def auto_translate(items, glossary, src_lang, tgt_lang, batch_size=8, delay=0.6,
             item["original"] = item.pop("_original_raw")
             restore_count += 1
 
-    total_translated = tm_count + dict_count + smart_count + fuzzy_count + api_count
-    print(f"  完成: TM {tm_count} + 词典 {dict_count} + 逐词 {smart_count} + 模糊 {fuzzy_count} + API {api_count} [{engine}]")
+    total_translated = tm_count + dict_count + smart_count + fuzzy_count + api_count + fallback_count
+    print(f"  完成: TM {tm_count} + 词典 {dict_count} + 逐词 {smart_count} + 模糊 {fuzzy_count} + API {api_count} + 兜底 {fallback_count} [{engine}]")
     if preprocess_count:
         print(f"  预处理: {preprocess_count} 复合词分解")
     if verify_count:
