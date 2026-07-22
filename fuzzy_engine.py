@@ -21,6 +21,109 @@ from collections import Counter
 
 
 # ══════════════════════════════════════════════════════════
+#  0. 通用英文词汇 → 中文词库（保证逐词翻译覆盖）
+# ══════════════════════════════════════════════════════════
+
+_GENERAL_WORD_BANK = {
+    # 功能词
+    "of": "的", "for": "用于", "the": "", "a": "", "an": "", "to": "至", "from": "来自",
+    "with": "与", "by": "通过", "in": "中", "on": "上", "at": "在", "as": "作为",
+    "is": "是", "are": "是", "was": "是", "be": "是", "has": "具有", "have": "具有",
+    "not": "不", "no": "无", "or": "或", "and": "与", "if": "如果", "this": "此",
+    "that": "该", "it": "它", "its": "其", "all": "所有", "each": "每个", "any": "任何",
+    "some": "某些", "both": "两者", "such": "此类", "into": "进入", "over": "超过",
+    "under": "下方", "above": "上方", "below": "下方", "between": "之间",
+    "during": "期间", "after": "之后", "before": "之前", "within": "之内",
+    "without": "无", "per": "每", "via": "经", "due": "由于",
+
+    # 常用动词
+    "handle": "处理", "process": "处理", "control": "控制", "manage": "管理",
+    "monitor": "监控", "detect": "检测", "check": "检查", "verify": "验证",
+    "calculate": "计算", "compute": "计算", "estimate": "估计", "predict": "预测",
+    "determine": "确定", "select": "选择", "enable": "使能", "disable": "禁用",
+    "activate": "激活", "deactivate": "停用", "switch": "切换", "toggle": "切换",
+    "set": "设置", "get": "获取", "read": "读取", "write": "写入", "store": "存储",
+    "load": "加载", "save": "保存", "configure": "配置", "initialize": "初始化",
+    "reset": "复位", "start": "启动", "stop": "停止", "pause": "暂停", "resume": "恢复",
+    "update": "更新", "modify": "修改", "delete": "删除", "add": "添加", "remove": "移除",
+    "replace": "替换", "convert": "转换", "transfer": "传输", "send": "发送",
+    "receive": "接收", "request": "请求", "response": "响应", "report": "报告",
+    "provide": "提供", "support": "支持", "require": "需要", "allow": "允许",
+    "prevent": "防止", "protect": "保护", "ensure": "确保", "maintain": "维持",
+    "perform": "执行", "execute": "执行", "apply": "应用", "use": "使用",
+    "using": "使用", "based": "基于",
+
+    # 名词
+    "interface": "接口", "library": "库", "function": "函数", "parameter": "参数",
+    "value": "值", "variable": "变量", "constant": "常量", "array": "数组",
+    "buffer": "缓冲区", "pointer": "指针", "address": "地址", "index": "索引",
+    "counter": "计数器", "timer": "定时器", "flag": "标志", "mask": "掩码",
+    "bit": "位", "byte": "字节", "word": "字", "register": "寄存器", "memory": "内存",
+    "stack": "堆栈", "queue": "队列", "list": "列表", "table": "表", "map": "映射",
+    "mode": "模式", "state": "状态", "status": "状态", "type": "类型", "class": "类",
+    "object": "对象", "instance": "实例", "event": "事件", "message": "消息",
+    "signal": "信号", "data": "数据", "information": "信息", "code": "代码",
+    "error": "错误", "fault": "故障", "warning": "警告", "failure": "失效",
+    "condition": "条件", "result": "结果", "output": "输出", "input": "输入",
+    "source": "源", "target": "目标", "destination": "目的地", "origin": "原始",
+    "number": "编号", "name": "名称", "description": "描述", "comment": "注释",
+    "version": "版本", "date": "日期", "time": "时间", "level": "级别",
+    "range": "范围", "limit": "极限", "threshold": "阈值", "window": "窗口",
+    "factor": "系数", "ratio": "比率", "rate": "速率", "speed": "速度",
+    "angle": "角度", "degree": "度", "frequency": "频率", "period": "周期",
+    "phase": "相位", "duty": "占空比", "pulse": "脉冲", "width": "宽度",
+    "structure": "结构", "component": "组件", "module": "模块", "unit": "单元",
+    "system": "系统", "device": "设备", "driver": "驱动", "hardware": "硬件",
+    "software": "软件", "firmware": "固件", "application": "应用", "program": "程序",
+    "service": "服务", "process": "进程", "task": "任务", "thread": "线程",
+    "client": "客户端", "server": "服务端", "master": "主控", "slave": "从控",
+    "frame": "帧", "packet": "包", "channel": "通道", "bus": "总线",
+    "port": "端口", "pin": "引脚", "connector": "连接器", "cable": "线缆",
+    "diagnostics": "诊断", "monitoring": "监控", "logging": "记录", "tracing": "追踪",
+    "adaptation": "自适应", "correction": "修正", "compensation": "补偿",
+    "calibration": "标定", "validation": "验证", "verification": "验证",
+    "coordination": "协调", "synchronization": "同步", "allocation": "分配",
+    "arbitration": "仲裁", "scheduling": "调度", "sequencing": "排序",
+    "filtering": "滤波", "averaging": "平均", "smoothing": "平滑",
+    "interpolation": "插值", "extrapolation": "外推", "integration": "积分",
+    "differentiation": "微分", "modeling": "建模", "simulation": "仿真",
+    "estimation": "估计", "prediction": "预测", "optimization": "优化",
+    "normalization": "规范化", "linearization": "线性化",
+
+    # 执行器/传感器
+    "actuator": "执行器", "sensor": "传感器", "valve": "阀", "motor": "电机",
+    "solenoid": "电磁阀", "relay": "继电器", "switch": "开关", "pump": "泵",
+    "injector": "喷油器", "throttle": "节气门", "actuators": "执行器",
+    "Electrical": "电气", "electrical": "电气", "digital": "数字",
+    "powerstage": "功率级", "power": "功率",
+    "coordinator": "协调器", "governor": "调速器",
+
+    # 汽车专用
+    "engine": "发动机", "transmission": "变速箱", "brake": "制动", "clutch": "离合器",
+    "turbocharger": "涡轮增压器", "supercharger": "机械增压器", "intercooler": "中冷器",
+    "radiator": "散热器", "battery": "蓄电池", "starter": "起动机", "alternator": "发电机",
+    "compressor": "压缩机", "condenser": "冷凝器", "evaporator": "蒸发器",
+    "catalyst": "催化器", "filter": "过滤器", "exhaust": "排气", "intake": "进气",
+    "fuel": "燃油", "oil": "机油", "coolant": "冷却液", "pressure": "压力",
+    "temperature": "温度", "flow": "流量", "torque": "扭矩", "acceleration": "加速度",
+    "vehicle": "车辆", "wheel": "车轮", "axle": "车桥", "chassis": "底盘",
+    "body": "车身", "door": "车门", "seat": "座椅", "pedal": "踏板",
+    "steering": "转向", "suspension": "悬架", "stability": "稳定性",
+    "emission": "排放", "combustion": "燃烧",
+    "single": "单", "common": "公共", "virtual": "虚拟", "closed": "闭环",
+    "open": "开环", "loop": "环", "respect": "相关",
+    "demands": "需求", "Handling": "处理", "handling": "处理",
+    "Weichai": "潍柴", "Application": "应用程序", "programming": "编程",
+    "standardized": "标准化", "sharing": "共享", "naming": "命名",
+    "computations": "计算", "computation": "计算", "methods": "方法",
+    "support": "支持", "receive": "接收", "send": "发送", "transmit": "发射",
+    "shut": "关闭", "off": "断开", "conditions": "条件",
+    "driver": "驱动", "controlling": "控制",
+    "Communication": "通信", "communication": "通信",
+    "customer": "客户", "compatible": "兼容",
+}
+
+# ══════════════════════════════════════════════════════════
 #  1. 拼写规范化（常见 ECU 变体 / 大小写 / 缩写变体）
 # ══════════════════════════════════════════════════════════
 

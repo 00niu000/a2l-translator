@@ -65,8 +65,8 @@ from fuzzy_engine import (
     rate_confidence, classify_confidence, check_consistency,
     hybrid_similarity, levenshtein_ratio,
 )
-# 直接导入拼写变体表（用于终极降级翻译）
-from fuzzy_engine import _SPELL_VARIANTS
+# 导入词库（用于终极降级翻译）
+from fuzzy_engine import _SPELL_VARIANTS, _GENERAL_WORD_BANK
 
 # ── 导入多源词典验证 (8大权威词典) ──
 try:
@@ -929,6 +929,8 @@ def auto_translate(items, glossary, src_lang, tgt_lang, batch_size=8, delay=0.6,
     if still_untranslated:
         # 建立逐词翻译库（多数据源合并）
         word_map = {}
+        # 从通用词库提取（最高优先级，覆盖所有常用词）
+        word_map.update({k.lower(): v for k, v in _GENERAL_WORD_BANK.items() if v})
         # 从缩写表提取
         word_map.update({k.lower(): v for k, v in _ABBREVIATIONS.items()})
         # 从德语缩写提取
