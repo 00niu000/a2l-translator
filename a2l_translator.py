@@ -344,6 +344,18 @@ PATTERNS = [
     ("HEADER",           re.compile(r'/begin\s+HEADER\s+"([^"]*)"', re.I),                           1, 0, True),
     ("MOD_COMMON",       re.compile(r'/begin\s+MOD_COMMON\s+"([^"]*)"', re.I),                       1, 0, True),
     ("MOD_PAR",          re.compile(r'/begin\s+MOD_PAR\s+"([^"]*)"', re.I),                          1, 0, True),
+    # 新增：更多 A2L 关键字
+    ("ANNOTATION",       re.compile(r'/begin\s+ANNOTATION.*?"([^"]*)"', re.I | re.DOTALL),           1, 0, False),
+    ("RECORD_LAYOUT",    re.compile(r'/begin\s+RECORD_LAYOUT\s+(\w+)\s*"([^"]*)"', re.I),           2, 1, False),
+    ("DEF_CHARACTERISTIC", re.compile(r'/begin\s+DEF_CHARACTERISTIC\s+(\w+)\s+"([^"]*)"', re.I),    2, 1, False),
+    ("UNIT",             re.compile(r'/begin\s+UNIT\s+(\w+)\s+"([^"]*)"', re.I),                     2, 1, False),
+    ("USER_RIGHTS",      re.compile(r'/begin\s+USER_RIGHTS\s+(\w+)\s+"([^"]*)"', re.I),             2, 1, False),
+    # 中文描述嵌入（处理描述文本中的中文内容）
+    ("DESC_FIELD",       re.compile(r'DESC\s+"([^"]{3,})"', re.I),                                   1, 0, False),
+    # ANNOTATION_TEXT 长文本
+    ("ANNOTATION_TEXT",  re.compile(r'/begin\s+ANNOTATION_TEXT\s+"([^"]+)"', re.I),                  1, 0, False),
+    # 多行长文本描述
+    ("LONG_DESC",        re.compile(r'/begin\s+LONG_DESC\s+"([^"]+)"', re.I),                        1, 0, False),
 ]
 
 COMMENT_BLOCK_RE = re.compile(r'/\*([\s\S]*?)\*/')
