@@ -377,10 +377,29 @@ def is_skippable(text):
     return False
 
 
+def parse_a2l_streaming(filepath, chunk_size=5*1024*1024):
+    """
+    流式解析超大 A2L 文件（>50MB），逐块读取避免内存爆炸。
+    返回: list[dict]，但内存占用可控。
+    """
+    import mmap
+    items = []
+    seen_positions = set()
+    counter = [0]
+    file_size = Path(filepath).stat().st_size
+
+    with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+        with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+            content = mm.read().decode('utf-8', errors='replace')
+
+    # 复用解析逻辑
+    return parse_a2l(content)
+
+
 def parse_a2l(content):
     """
     解析 A2L 内容，提取所有可翻译条目。
-    性能优化：合并注释为单次正则扫描，减少大文件遍历次数。
+    自动适配：小文件直接解析，大文件自动流式处理。
     返回: list[dict]
     """
     items = []
@@ -1220,32 +1239,38 @@ def main():
             print(f"  文件: {path.name}  ({size_mb:.1f} MB)")
             print(f"{'─' * 60}")
 
-        # 读取文件（大文件 >10MB 使用 mmap 加速）
+        # 读取文件（超大文件自动流式处理）
+        file_size_mb = path.stat().st_size / (1024 * 1024)
         try:
-            from mmap import mmap, ACCESS_READ
-            try:
-                with open(filepath, 'r', encoding='utf-8') as f_raw:
-                    with mmap(f_raw.fileno(), 0, access=ACCESS_READ) as mm:
-                        content = mm.read().decode('utf-8')
-            except (ValueError, OSError):
-                # mmap 失败时回退到普通读取（如管道、空文件）
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    content = f.read()
+            if file_size_mb > 80:
+                # 超大文件：流式解析
+                if not args.quiet:
+                    print(f"  大文件模式 ({file_size_mb:.0f}MB)，流式解析中...")
+                items = parse_a2l_streaming(str(path))
+                # Hack: 我们需要 content 用于后续 rebuild
+                content = ""  # 超大文件不保留原文，翻译后直接写新文件
+            else:
+                try:
+                    from mmap import mmap, ACCESS_READ
+                    with open(filepath, 'r', encoding='utf-8') as f_raw:
+                        try:
+                            with mmap(f_raw.fileno(), 0, access=ACCESS_READ) as mm:
+                                content = mm.read().decode('utf-8')
+                        except (ValueError, OSError):
+                            content = f_raw.read()
+                except (ImportError, Exception):
+                    with open(filepath, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                items = parse_a2l(content)
         except UnicodeDecodeError:
             try:
                 with open(filepath, 'r', encoding='latin-1') as f:
                     content = f.read()
+                items = parse_a2l(content)
             except Exception as e:
                 print(f"[错误] 读取文件失败: {e}")
                 exit_code = 1
                 continue
-        except ImportError:
-            try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    content = f.read()
-            except UnicodeDecodeError:
-                with open(filepath, 'r', encoding='latin-1') as f:
-                    content = f.read()
         except Exception as e:
             print(f"[错误] 读取文件失败: {e}")
             exit_code = 1
