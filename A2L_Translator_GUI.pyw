@@ -11,6 +11,7 @@ import re
 import json
 import csv
 import time
+import shutil
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -1258,6 +1259,13 @@ class A2LTranslatorGUI:
                            activebackground=COLORS["bg"])
             btn.pack(side=tk.LEFT)
 
+        # 文件库按钮
+        self.btn_files = tk.Button(row2, text="📁 文件库", command=self._open_file_library,
+                                    font=("Microsoft YaHei UI", 8), bg=COLORS["accent"], fg="white",
+                                    borderwidth=0, cursor="hand2", padx=8, pady=1,
+                                    activebackground=COLORS["accent_h"])
+        self.btn_files.pack(side=tk.LEFT, padx=(0, 6))
+
         # 分隔
         tk.Frame(row2, bg=COLORS["border"], width=1).pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=1)
 
@@ -1277,6 +1285,105 @@ class A2LTranslatorGUI:
         self.btn_verify.pack(side=tk.LEFT, padx=(0, 3))
         self.btn_upgrade = ttk.Button(row2, text="📦 升级", command=self._show_upgrade_info, style="Outline.TButton")
         self.btn_upgrade.pack(side=tk.LEFT)
+
+    # ── 文件库 ──
+
+    def _get_storage_dir(self):
+        """获取应用文件存储目录"""
+        d = Path(os.environ.get("APPDATA", "")) / "A2L_Translator" / "files"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _open_file_library(self):
+        """打开文件库对话框"""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("文件库 — A2L/KP 文件管理")
+        dlg.geometry("650x450")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        # 工具栏
+        tb = tk.Frame(dlg, bg=COLORS["card"])
+        tb.pack(fill="x", padx=10, pady=(10, 4))
+        tk.Label(tb, text="已存储文件", font=("Microsoft YaHei UI", 12, "bold"),
+                 bg=COLORS["card"]).pack(side="left")
+
+        def import_files():
+            paths = filedialog.askopenfilenames(
+                title="导入 A2L/KP 文件",
+                filetypes=[("A2L/KP 文件", "*.a2l;*.kp"), ("所有文件", "*.*")]
+            )
+            if paths:
+                storage = self._get_storage_dir()
+                for p in paths:
+                    src = Path(p)
+                    dst = storage / src.name
+                    shutil.copy2(str(src), str(dst))
+                refresh_list()
+                self._set_status(f"已导入 {len(paths)} 个文件", "success")
+
+        tk.Button(tb, text="📥 导入文件", command=import_files,
+                  font=("Microsoft YaHei UI", 9), bg=COLORS["accent"], fg="white",
+                  borderwidth=0, cursor="hand2", padx=12, pady=3).pack(side="right", padx=4)
+
+        # 文件列表
+        list_frame = tk.Frame(dlg)
+        list_frame.pack(fill="both", expand=True, padx=10, pady=4)
+
+        cols = ("文件名", "大小", "日期")
+        tree = ttk.Treeview(list_frame, columns=cols, show="headings", selectmode="browse")
+        tree.pack(side="left", fill="both", expand=True)
+        tree.heading("文件名", text="文件名"); tree.column("文件名", width=300)
+        tree.heading("大小", text="大小"); tree.column("大小", width=80)
+        tree.heading("日期", text="日期"); tree.column("日期", width=150)
+
+        sb = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
+        sb.pack(side="right", fill="y")
+        tree.configure(yscrollcommand=sb.set)
+
+        def refresh_list():
+            for item in tree.get_children():
+                tree.delete(item)
+            storage = self._get_storage_dir()
+            files = sorted(storage.glob("*.a2l")) + sorted(storage.glob("*.kp"))
+            for f in files:
+                size = f"{f.stat().st_size / 1024 / 1024:.1f} MB"
+                date = time.strftime("%Y-%m-%d %H:%M", time.localtime(f.stat().st_mtime))
+                tree.insert("", "end", values=(f.name, size, date), tags=(str(f),))
+
+        def load_selected():
+            sel = tree.selection()
+            if sel:
+                fname = tree.item(sel[0], "tags")[0]
+                dlg.destroy()
+                self.filepath.set(fname)
+                self._load_file()
+
+        def delete_selected():
+            sel = tree.selection()
+            if sel and messagebox.askyesno("确认", "删除选中文件？"):
+                fname = tree.item(sel[0], "tags")[0]
+                try:
+                    Path(fname).unlink()
+                except: pass
+                refresh_list()
+
+        tree.bind("<Double-1>", lambda e: load_selected())
+
+        # 底部按钮
+        btn_frame = tk.Frame(dlg)
+        btn_frame.pack(fill="x", padx=10, pady=(4, 10))
+        tk.Button(btn_frame, text="加载选中", command=load_selected,
+                  font=("Microsoft YaHei UI", 9), bg=COLORS["accent"], fg="white",
+                  borderwidth=0, cursor="hand2", padx=14, pady=3).pack(side="left", padx=4)
+        tk.Button(btn_frame, text="删除选中", command=delete_selected,
+                  font=("Microsoft YaHei UI", 9), bg="#DC2626", fg="white",
+                  borderwidth=0, cursor="hand2", padx=14, pady=3).pack(side="left")
+        tk.Button(btn_frame, text="关闭", command=dlg.destroy,
+                  font=("Microsoft YaHei UI", 9),
+                  borderwidth=1, relief="solid", padx=14, pady=3).pack(side="right")
+
+        refresh_list()
 
     # ── 标定工具方法 ──
 
