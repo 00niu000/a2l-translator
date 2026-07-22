@@ -25,5 +25,8 @@ env/
 *.log
 *.tmp
 
-# Sensitive config (contains API keys)
+# Sensitive config / user data
 config.json
+translation_memory.json
+*.a2l
+*_translated.a2l
