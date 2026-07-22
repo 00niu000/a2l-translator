@@ -1246,6 +1246,91 @@ class A2LTranslatorGUI:
             btn = ttk.Button(right, text=text, command=cmd, style="Outline.TButton")
             btn.pack(side=tk.LEFT, padx=(0, 6))
 
+        # 分隔
+        sep2 = tk.Frame(inner, bg=COLORS["border"], width=1)
+        sep2.pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=2)
+
+        # 标定工具
+        tools_frame = tk.Frame(inner, bg=COLORS["card"])
+        tools_frame.pack(side=tk.LEFT)
+
+        tools = [
+            ("数据对比", self._tool_compare),
+            ("校验和", self._tool_checksum),
+            ("格式转换", self._tool_convert),
+        ]
+        for text, cmd in tools:
+            btn = ttk.Button(tools_frame, text=f"🔧 {text}", command=cmd, style="Outline.TButton")
+            btn.pack(side=tk.LEFT, padx=(0, 4))
+
+    # ── 标定工具方法 ──
+
+    def _tool_compare(self):
+        """数据对比工具"""
+        f1 = filedialog.askopenfilename(title="选择文件1", filetypes=[("固件文件", "*.bin;*.hex;*.s19"), ("所有", "*.*")])
+        if not f1: return
+        f2 = filedialog.askopenfilename(title="选择文件2", filetypes=[("固件文件", "*.bin;*.hex;*.s19"), ("所有", "*.*")])
+        if not f2: return
+        try:
+            from calibration_tools import compare_firmware
+            import io, sys; out = io.StringIO(); old = sys.stdout; sys.stdout = out
+            compare_firmware(f1, f2)
+            sys.stdout = old
+            self._show_result_dialog("数据对比结果", out.getvalue())
+        except Exception as e:
+            messagebox.showerror("错误", str(e))
+
+    def _tool_checksum(self):
+        """校验和计算工具"""
+        f = filedialog.askopenfilename(title="选择文件", filetypes=[("固件文件", "*.bin;*.hex;*.s19"), ("所有", "*.*")])
+        if not f: return
+        try:
+            from calibration_tools import checksum_file
+            import io, sys; out = io.StringIO(); old = sys.stdout; sys.stdout = out
+            checksum_file(f)
+            sys.stdout = old
+            self._show_result_dialog("校验和结果", out.getvalue())
+        except Exception as e:
+            messagebox.showerror("错误", str(e))
+
+    def _tool_convert(self):
+        """格式转换工具"""
+        f = filedialog.askopenfilename(title="选择输入文件", filetypes=[("固件文件", "*.bin;*.hex;*.s19"), ("所有", "*.*")])
+        if not f: return
+        # 自动推断输出格式
+        in_ext = Path(f).suffix.lower()
+        out_map = {'.bin': '.hex', '.hex': '.bin', '.s19': '.bin', '.srec': '.bin', '.mot': '.bin'}
+        out_ext = out_map.get(in_ext, '.bin')
+        out = filedialog.asksaveasfilename(title="保存为", defaultextension=out_ext,
+                                            filetypes=[("BIN", "*.bin"), ("HEX", "*.hex"), ("S19", "*.s19")])
+        if not out: return
+        try:
+            from calibration_tools import convert_file
+            import io, sys; out_s = io.StringIO(); old = sys.stdout; sys.stdout = out_s
+            convert_file(f, out)
+            sys.stdout = old
+            messagebox.showinfo("完成", out_s.getvalue())
+        except Exception as e:
+            messagebox.showerror("错误", str(e))
+
+    def _show_result_dialog(self, title, text):
+        """显示带滚动条的文本结果对话框"""
+        dlg = tk.Toplevel(self.root)
+        dlg.title(title)
+        dlg.geometry("700x500")
+        dlg.transient(self.root)
+        frame = tk.Frame(dlg)
+        frame.pack(fill="both", expand=True, padx=10, pady=10)
+        scrollbar = tk.Scrollbar(frame)
+        scrollbar.pack(side="right", fill="y")
+        txt = tk.Text(frame, font=("Consolas", 9), wrap="none",
+                      yscrollcommand=scrollbar.set, bg="#1E1E1E", fg="#D4D4D4",
+                      insertbackground="white")
+        txt.pack(fill="both", expand=True)
+        txt.insert("1.0", text)
+        txt.config(state="disabled")
+        scrollbar.config(command=txt.yview)
+
     def _build_table(self):
         card = tk.Frame(self.root, bg=COLORS["card"], bd=0,
                         highlightbackground=COLORS["border"],
