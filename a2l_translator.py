@@ -65,8 +65,10 @@ from translation_memory import (
 from fuzzy_engine import (
     normalize_spelling, deep_fuzzy_search, find_fuzzy_match,
     rate_confidence, classify_confidence, check_consistency,
-    hybrid_similarity,
+    hybrid_similarity, levenshtein_ratio,
 )
+# 直接导入拼写变体表（用于终极降级翻译）
+from fuzzy_engine import _SPELL_VARIANTS
 
 # ── 导入多源词典验证 (8大权威词典) ──
 try:
