@@ -941,8 +941,34 @@ class A2LTranslatorGUI:
         else:
             self.ssl_ctx = None
 
-        # ── 启动时自动检查更新 ──
+        # ── 启动时加载配置 & 自动扫描 ──
         self.root.after(2000, lambda: self._auto_check_update())
+        self.root.after(500, self._auto_scan_folder)
+
+    def _auto_scan_folder(self):
+        """启动时自动扫描上次目录/默认目录中的 A2L/KP 文件"""
+        import json as _json
+        cfg_path = Path(os.environ.get("APPDATA", "")) / "A2L_Translator" / "config.json"
+        watch_dir = None
+        try:
+            if cfg_path.exists():
+                cfg = _json.load(open(cfg_path, encoding='utf-8'))
+                watch_dir = cfg.get("watch_folder", "")
+        except: pass
+
+        # 无配置则跳过
+        if not watch_dir or not Path(watch_dir).exists():
+            return
+
+        # 扫描 A2L/KP 文件
+        files = list(Path(watch_dir).glob("*.a2l")) + list(Path(watch_dir).glob("*.kp"))
+        if not files: return
+
+        # 取最新修改的文件自动加载
+        latest = max(files, key=lambda f: f.stat().st_mtime)
+        self.filepath.set(str(latest))
+        self._set_status(f"自动加载: {latest.name}", "info")
+        self.root.after(500, self._load_file)
 
     # ═══ UI 构建 ═══
 
@@ -2197,6 +2223,19 @@ class A2LTranslatorGUI:
 
         if self.is_processing:
             return
+
+        # 自动保存目录为默认文件夹（下次启动自动扫描）
+        try:
+            import json as _json
+            cfg_dir = Path(os.environ.get("APPDATA", "")) / "A2L_Translator"
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            cfg_path = cfg_dir / "config.json"
+            cfg = {}
+            if cfg_path.exists():
+                cfg = _json.load(open(cfg_path, encoding='utf-8'))
+            cfg["watch_folder"] = str(Path(path).parent)
+            _json.dump(cfg, open(cfg_path, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+        except: pass
 
         # ── 模态加载窗口 ──
         load_win = tk.Toplevel(self.root)
