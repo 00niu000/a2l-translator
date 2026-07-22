@@ -1590,15 +1590,17 @@ class A2LTranslatorGUI:
             self._start_lazy_tree_load(reset=True)
             return
 
-        # 有过滤词 → 扫描 entries，只显示匹配的
+        # 有过滤词 → 扫描 entries（最多显示 3000 条匹配）
+        MAX_MATCHES = 3000
         matched = []
         for i, e in enumerate(self.entries):
             ol = e["original"].lower()
             tl = (e.get("translated") or "").lower()
             nl = e.get("name", "").lower()
-            kw = e.get("keyword", "").lower()
-            if (query in ol or query in tl or query in nl or query in kw):
+            if query in ol or query in tl or query in nl:
                 matched.append((i, e))
+                if len(matched) >= MAX_MATCHES:
+                    break
 
         self.tree.delete(*self.tree.get_children())
         self._tree_loaded = 0
@@ -1608,14 +1610,18 @@ class A2LTranslatorGUI:
             self._update_stats_filtered(0, len(self.entries))
             return
 
-        # 分批插入（每批 200 条，用 update_idletasks 而非 update）
+        # 快速批量插入
         total_m = len(matched)
-        BATCH = 200
+        BATCH = 100
 
         def insert_filter_batch(start):
             if start >= total_m:
                 self._tree_loaded = total_m
-                self._update_stats_filtered(total_m, len(self.entries))
+                if len(self.entries) > MAX_MATCHES:
+                    self._update_stats_filtered(total_m, len(self.entries))
+                    self._set_status(f"显示 {total_m} 条匹配（已截断），请输入更多关键词缩小范围", "info")
+                else:
+                    self._update_stats_filtered(total_m, len(self.entries))
                 return
 
             end = min(start + BATCH, total_m)
@@ -1627,12 +1633,7 @@ class A2LTranslatorGUI:
                             e["original"], e.get("translated", "")),
                     tags=(tag,))
 
-            try:
-                self.root.update_idletasks()
-            except tk.TclError:
-                pass
-
-            self.root.after(30, lambda: insert_filter_batch(end))
+            self.root.after(5, lambda: insert_filter_batch(end))
 
         insert_filter_batch(0)
 
@@ -1652,7 +1653,9 @@ class A2LTranslatorGUI:
                     text=f"共 {total} 条  |  已翻译 {translated}  |  未翻译 {total - translated}")
 
     def _start_lazy_tree_load(self, reset=False):
-        """渐进式加载 TreeView：每 200 条一批，用 after_idle 在空闲时加载"""
+        """优化版 TreeView 加载：最多加载 3000 条，超出自动分页"""
+        MAX_VISIBLE = 3000  # 超过此数量不全部加载，避免卡顿
+
         if reset:
             self.tree.delete(*self.tree.get_children())
             self._tree_loaded = 0
@@ -1665,16 +1668,22 @@ class A2LTranslatorGUI:
             return
 
         total = len(self.entries)
-        BATCH = 200
+
+        # 超大数据集：只加载前 MAX_VISIBLE 条
+        effective_total = min(total, MAX_VISIBLE)
+        BATCH = 100  # 减小批次，更流畅
 
         def load_batch():
-            if self._tree_loaded >= total:
+            if self._tree_loaded >= effective_total:
                 self._tree_full_loaded = True
                 self._tree_loading_job = None
-                self._update_stats_filtered(total, total)
+                self._update_stats_filtered(self._tree_loaded, total)
+                if total > MAX_VISIBLE:
+                    self._set_status(f"已加载 {MAX_VISIBLE}/{total} 条（超出部分请使用搜索过滤）", "info")
                 return
 
-            end = min(self._tree_loaded + BATCH, total)
+            end = min(self._tree_loaded + BATCH, effective_total)
+            # 批量构建行数据减少 insert 调用次数
             for i in range(self._tree_loaded, end):
                 e = self.entries[i]
                 tag = "translated" if e.get("translated") else "untranslated"
@@ -1684,19 +1693,10 @@ class A2LTranslatorGUI:
                     tags=(tag,))
 
             self._tree_loaded = end
-
-            # 轻量刷新：只处理空闲任务，不阻塞用户交互
-            try:
-                self.root.update_idletasks()
-            except tk.TclError:
-                pass
-
             self._update_stats_filtered(self._tree_loaded, total)
+            self._tree_loading_job = self.root.after(10, load_batch)  # 10ms 间隔
 
-            # 使用 after_idle：仅在主线程空闲时加载下一批
-            self._tree_loading_job = self.root.after_idle(load_batch)
-
-        self._tree_loading_job = self.root.after_idle(load_batch)
+        self._tree_loading_job = self.root.after(10, load_batch)
 
     def _cancel_tree_loading(self):
         """取消所有 TreeView 加载任务"""
