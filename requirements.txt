@@ -1,0 +1,8 @@
+# A2L Translator Dependencies
+# Python 3.9+
+
+# Build/packaging
+pyinstaller>=6.0.0
+
+# All other dependencies are Python standard library (tkinter, ssl, json, csv, re, etc.)
+# No additional pip packages required for core functionality

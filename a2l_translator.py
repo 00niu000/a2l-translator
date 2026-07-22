@@ -31,6 +31,15 @@ import urllib.error
 from pathlib import Path
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
+
+# ── 性能优化：模块级预计算 ──
+_UMLAUT_SIMPLE = str.maketrans("äöüÄÖÜ", "aouAOU")
+_UMLAUT_EXPANDED = str.maketrans({
+    "ä": "ae", "ö": "oe", "ü": "ue",
+    "Ä": "Ae", "Ö": "Oe", "Ü": "Ue",
+    "ß": "ss",
+})
 
 # ── 百度翻译 API ──
 try:
@@ -57,23 +66,25 @@ except ImportError:
 #  词典预索引 — O(n*m) → O(1) + O(candidates)
 # ══════════════════════════════════════════════════════════
 
+@lru_cache(maxsize=1)
+def _get_variant_cache():
+    """缓存变体转换结果（模块级单例）"""
+    return {}
+
+def _de_variants(text):
+    """生成德语文本的所有 ASCII 变体（使用模块级转换表）"""
+    simple = text.translate(_UMLAUT_SIMPLE).replace("ß", "ss")
+    expanded = text.translate(_UMLAUT_EXPANDED)
+    variants = {simple}
+    if expanded != simple:
+        variants.add(expanded)
+    return variants
+
 def build_glossary_index(glossary):
     """预建词典索引，大幅加速匹配。同时添加德语 Umlaut ASCII 变体。"""
     exact = {}
     by_first_word = {}
     by_length = {}
-
-    _umlaut_simple = str.maketrans("äöüÄÖÜ", "aouAOU")
-
-    def _de_variants(text):
-        simple = text.translate(_umlaut_simple).replace("ß", "ss")
-        expanded = text.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue")
-        expanded = expanded.replace("Ä", "Ae").replace("Ö", "Oe").replace("Ü", "Ue")
-        expanded = expanded.replace("ß", "ss")
-        variants = {simple}
-        if expanded != simple:
-            variants.add(expanded)
-        return variants
 
     def add_entry(key, value):
         kl = key.lower()
@@ -183,6 +194,13 @@ PATTERNS = [
 COMMENT_BLOCK_RE = re.compile(r'/\*([\s\S]*?)\*/')
 COMMENT_LINE_RE  = re.compile(r'//([^\r\n]*)')
 
+# ── 性能优化：合并注释匹配为单次扫描 ──
+_COMMENT_COMBINED_RE = re.compile(r'''
+    /\*([\s\S]*?)\*/    # 块注释
+    |                    # 或
+    //([^\r\n]*)         # 行注释
+''', re.VERBOSE)
+
 # 不可翻译的模式（纯数字、格式串、十六进制）
 SKIP_PATTERNS = [
     re.compile(r'^[0-9+\-*/\s().,eE]+$'),
@@ -192,8 +210,9 @@ SKIP_PATTERNS = [
 ]
 
 
+@lru_cache(maxsize=4096)
 def is_skippable(text):
-    """检查文本是否无需翻译"""
+    """检查文本是否无需翻译（缓存加速，高频调用）"""
     t = text.strip()
     if len(t) < 2:
         return True
@@ -206,6 +225,7 @@ def is_skippable(text):
 def parse_a2l(content):
     """
     解析 A2L 内容，提取所有可翻译条目。
+    性能优化：合并注释为单次正则扫描，减少大文件遍历次数。
     返回: list[dict]
     """
     items = []
@@ -242,46 +262,34 @@ def parse_a2l(content):
                 "end": end_pos,
             })
 
-    # 块注释
-    for m in COMMENT_BLOCK_RE.finditer(content):
-        body = m.group(1).strip()
-        if len(body) < 3 or is_skippable(body):
-            continue
-        start_pos = m.start() + 2  # 跳过 /*
-        end_pos = m.end() - 2      # 跳过 */
-        key = (start_pos, end_pos)
-        if key in seen_positions:
-            continue
-        seen_positions.add(key)
-        counter[0] += 1
-        items.append({
-            "id": counter[0],
-            "type": "COMMENT",
-            "name": "",
-            "original": m.group(1),
-            "translated": "",
-            "status": "untranslated",
-            "start": start_pos,
-            "end": end_pos,
-        })
+    # 合并注释为单次正则扫描（取代原来的两次遍历）
+    for m in _COMMENT_COMBINED_RE.finditer(content):
+        if m.group(1):  # 块注释
+            body = m.group(1).strip()
+            if len(body) < 3 or is_skippable(body):
+                continue
+            start_pos = m.start() + 2
+            end_pos = m.end() - 2
+            original = m.group(1)
+        else:  # 行注释 (group 2)
+            body = m.group(2).strip()
+            if len(body) < 3 or is_skippable(body):
+                continue
+            start_pos = m.start() + 2
+            end_pos = m.start() + len(m.group(0))
+            original = m.group(2)
 
-    # 行注释
-    for m in COMMENT_LINE_RE.finditer(content):
-        body = m.group(1).strip()
-        if len(body) < 3 or is_skippable(body):
-            continue
-        start_pos = m.start() + 2  # 跳过 //
-        end_pos = m.start() + len(m.group(0))
         key = (start_pos, end_pos)
         if key in seen_positions:
             continue
         seen_positions.add(key)
+
         counter[0] += 1
         items.append({
             "id": counter[0],
             "type": "COMMENT",
             "name": "",
-            "original": m.group(1),
+            "original": original,
             "translated": "",
             "status": "untranslated",
             "start": start_pos,
@@ -524,7 +532,7 @@ def api_translate_batch(texts, src_lang, tgt_lang, timeout=15):
     url = "https://api.mymemory.translated.net/get?" + urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
 
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; A2L-Translator/1.0)"})
+        req = urllib.request.Request(url, headers={"User-Agent": "A2L-Translator/2.9.5"})
         ctx = _ssl_context  # None = 默认验证，自定义 = 跳过或指定证书
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -838,9 +846,26 @@ def main():
             print(f"  文件: {path.name}  ({size_mb:.1f} MB)")
             print(f"{'─' * 60}")
 
-        # 读取文件
+        # 读取文件（大文件 >10MB 使用 mmap 加速）
         try:
-            # 尝试 UTF-8，失败则用 latin-1
+            from mmap import mmap, ACCESS_READ
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f_raw:
+                    with mmap(f_raw.fileno(), 0, access=ACCESS_READ) as mm:
+                        content = mm.read().decode('utf-8')
+            except (ValueError, OSError):
+                # mmap 失败时回退到普通读取（如管道、空文件）
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    content = f.read()
+        except UnicodeDecodeError:
+            try:
+                with open(filepath, 'r', encoding='latin-1') as f:
+                    content = f.read()
+            except Exception as e:
+                print(f"[错误] 读取文件失败: {e}")
+                exit_code = 1
+                continue
+        except ImportError:
             try:
                 with open(filepath, 'r', encoding='utf-8') as f:
                     content = f.read()

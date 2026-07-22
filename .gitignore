@@ -1,0 +1,29 @@
+# Build outputs
+build/
+dist/
+*.spec
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Virtual env
+venv/
+env/
+.venv/
+
+# Temp
+*.log
+*.tmp
+
+# Sensitive config (contains API keys)
+config.json

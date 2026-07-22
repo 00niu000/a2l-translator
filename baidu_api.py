@@ -14,6 +14,7 @@ import json
 import hashlib
 import random
 import ssl
+import time
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -21,6 +22,10 @@ import urllib.parse
 
 # API 端点
 _BAIDU_API_URL = "https://fanyi-api.baidu.com/api/trans/vip/translate"
+
+# ── 性能优化：连接复用 + 重试 ──
+_MAX_RETRIES = 3
+_RETRY_DELAY = 0.5  # 重试间隔秒数
 
 # 语言代码映射：工具内部 → 百度翻译
 _LANG_MAP = {
@@ -123,31 +128,51 @@ def baidu_translate_batch(
         data=encoded,
         headers={
             "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "A2L-Translator/2.6",
+            "User-Agent": "A2L-Translator/2.9.5",
+            "Connection": "keep-alive",
         },
         method="POST",
     )
 
-    try:
-        with urllib.request.urlopen(req, timeout=timeout, context=ssl_ctx) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        body_text = ""
+    # ── 带重试的请求（提升网络健壮性）──
+    result = None
+    last_error = None
+    for attempt in range(1, _MAX_RETRIES + 1):
         try:
-            body_text = e.read().decode("utf-8", errors="replace")[:300]
-        except Exception:
-            pass
-        print(f"  [百度翻译 HTTP {e.code}] {e.reason}" + (f" — {body_text}" if body_text else ""))
-        return None
-    except urllib.error.URLError as e:
-        err_msg = str(e)
-        if "CERTIFICATE_VERIFY_FAILED" in err_msg or "certificate" in err_msg.lower():
-            print(f"  [百度翻译 SSL 错误] 证书验证失败，可启用'跳过SSL验证'")
-        else:
-            print(f"  [百度翻译 网络错误] {e}")
-        return None
-    except json.JSONDecodeError as e:
-        print(f"  [百度翻译 解析错误] {e}")
+            with urllib.request.urlopen(req, timeout=timeout, context=ssl_ctx) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+            break  # 成功，退出重试循环
+        except urllib.error.HTTPError as e:
+            body_text = ""
+            try:
+                body_text = e.read().decode("utf-8", errors="replace")[:300]
+            except Exception:
+                pass
+            last_error = f"HTTP {e.code}: {e.reason}" + (f" — {body_text}" if body_text else "")
+            if e.code in (429, 500, 502, 503, 504):  # 可重试的服务端错误
+                if attempt < _MAX_RETRIES:
+                    time.sleep(_RETRY_DELAY * attempt)
+                    continue
+        except urllib.error.URLError as e:
+            err_msg = str(e)
+            if "CERTIFICATE_VERIFY_FAILED" in err_msg or "certificate" in err_msg.lower():
+                print(f"  [百度翻译 SSL 错误] 证书验证失败，可启用'跳过SSL验证'")
+                return None
+            last_error = str(e)
+            if attempt < _MAX_RETRIES:
+                time.sleep(_RETRY_DELAY * attempt)
+                continue
+        except json.JSONDecodeError as e:
+            print(f"  [百度翻译 解析错误] {e}")
+            return None
+        except Exception as e:
+            last_error = str(e)
+            if attempt < _MAX_RETRIES:
+                time.sleep(_RETRY_DELAY * attempt)
+                continue
+
+    if result is None:
+        print(f"  [百度翻译 请求失败（{_MAX_RETRIES}次重试后）] {last_error}")
         return None
 
     # 检查错误码

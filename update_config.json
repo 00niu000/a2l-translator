@@ -1,7 +1,9 @@
 {
-  "_comment": "WinOLS Toolkit 更新配置 — 修改 update_url 指向你的版本服务器",
-  "update_url": "",
+  "_comment": "A2L Translator 更新配置",
+  "update_url": "https://raw.githubusercontent.com/00niu000/a2l-translator/main/update_config.json",
+  "download_url": "https://github.com/00niu000/a2l-translator/releases/latest",
   "auto_check": true,
   "check_interval_days": 1,
-  "last_check": null
+  "last_check": null,
+  "current_version": "v2.9.5"
 }
