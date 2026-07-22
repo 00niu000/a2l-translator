@@ -2755,9 +2755,14 @@ def main():
     root = tk.Tk()
     root.withdraw()  # 先隐藏，避免 PyInstaller onefile 模式下闪现小窗口
 
-    icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "WinOLS_Toolkit.ico")
+    icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "A2L_Translator.ico")
+    if not os.path.exists(icon_path):
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "WinOLS_Toolkit.ico")
+    if not os.path.exists(icon_path):
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
     try:
-        root.iconbitmap(icon_path)
+        if os.path.exists(icon_path):
+            root.iconbitmap(icon_path)
     except Exception:
         try:
             root.iconbitmap(default="")
