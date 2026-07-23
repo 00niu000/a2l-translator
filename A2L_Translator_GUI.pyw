@@ -1225,7 +1225,7 @@ class A2LTranslatorGUI:
         row1.pack(fill=tk.X, padx=12, pady=(10, 4))
 
         tk.Label(row1, text="核心流程", font=("Microsoft YaHei UI", 8),
-                 fg=COLORS["sub"], bg=COLORS["card"]).pack(side=tk.LEFT, padx=(0, 8))
+                 fg=COLORS["text_secondary"], bg=COLORS["card"]).pack(side=tk.LEFT, padx=(0, 8))
 
         steps = [
             ("📂 选择文件", self._load_file, "Primary.TButton"),
@@ -1243,7 +1243,7 @@ class A2LTranslatorGUI:
         row2.pack(fill=tk.X, padx=12, pady=(2, 10))
 
         tk.Label(row2, text="工具辅助", font=("Microsoft YaHei UI", 8),
-                 fg=COLORS["sub"], bg=COLORS["card"]).pack(side=tk.LEFT, padx=(0, 8))
+                 fg=COLORS["text_secondary"], bg=COLORS["card"]).pack(side=tk.LEFT, padx=(0, 8))
 
         # 标定工具组
         cal_frame = tk.Frame(row2, bg=COLORS["border"])
@@ -1251,7 +1251,7 @@ class A2LTranslatorGUI:
         cal_inner = tk.Frame(cal_frame, bg=COLORS["card"])
         cal_inner.pack(padx=1, pady=1)
         tk.Label(cal_inner, text="标定", font=("Microsoft YaHei UI", 7),
-                 fg=COLORS["sub"], bg=COLORS["card"]).pack(side=tk.LEFT, padx=(4, 2))
+                 fg=COLORS["text_secondary"], bg=COLORS["card"]).pack(side=tk.LEFT, padx=(4, 2))
         for text, cmd in [("对比", self._tool_compare), ("校验", self._tool_checksum), ("转换", self._tool_convert)]:
             btn = tk.Button(cal_inner, text=text, command=cmd, font=("Microsoft YaHei UI", 8),
                            bg=COLORS["card"], fg=COLORS["text"], borderwidth=0,
